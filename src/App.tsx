@@ -4,8 +4,7 @@ import { WalletSetup } from './components/WalletSetup';
 import { DKGWizard } from './components/DKGWizard';
 import { SigningPage } from './components/SigningPage';
 import { Settings } from './components/Settings';
-import { getStatus, type StatusResponse } from './lib/api';
-import type { VaultConfig } from './lib/vault-types';
+import { getStatus } from './lib/api';
 import './styles/global.css';
 import './styles/ceremony.css';
 

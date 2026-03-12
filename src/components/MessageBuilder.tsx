@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { OP20_METHODS, type MethodDef, type MethodParam } from '../lib/op20-methods';
+import { OP20_METHODS, type MethodDef } from '../lib/op20-methods';
 import { encodeTx } from '../lib/api';
 import type { ContractConfig } from '../lib/vault-types';
 
@@ -73,7 +73,7 @@ export function MessageBuilder({ contracts, onMessageBuilt }: Props) {
       if (mode === 'raw') {
         const hex = rawHex.replace(/^0x/, '');
         message = new Uint8Array(hex.match(/.{2}/g)!.map(b => parseInt(b, 16)));
-        const hashBuf = await crypto.subtle.digest('SHA-256', message);
+        const hashBuf = await crypto.subtle.digest('SHA-256', new Uint8Array(message).buffer as ArrayBuffer);
         messageHash = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
       } else {
         if (!contractAddr || !selectedMethod) {

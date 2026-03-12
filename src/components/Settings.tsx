@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { getConfig, getWalletBalance, getBalances, resetInstance, updateContracts } from '../lib/api';
-import type { VaultConfig, ContractConfig } from '../lib/vault-types';
+import { getConfig, getWalletBalance, getBalances, resetInstance } from '../lib/api';
+import type { VaultConfig } from '../lib/vault-types';
 
 interface Props {
   onBack: () => void;
