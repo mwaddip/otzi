@@ -295,7 +295,11 @@ function RelayPhaseProgress({ phase, collected, total, label }: {
 
 // ── Main component ──
 
-export function DKGWizard() {
+interface DKGWizardProps {
+  onComplete?: () => void;
+}
+
+export function DKGWizard({ onComplete }: DKGWizardProps = {}) {
   const [state, dispatch] = useReducer(reducer, initialState);
   const [pasteValue, setPasteValue] = useState('');
   const [copied, setCopied] = useState<string | null>(null);
@@ -1025,12 +1029,28 @@ export function DKGWizard() {
         password,
       );
       downloadShareFile(shareFile);
+      // Save DKG result to backend config
+      try {
+        const { saveDKG } = await import('../lib/api');
+        await saveDKG({
+          threshold: state.threshold,
+          parties: state.parties,
+          level: state.level,
+          combinedPubKey: toHex(state.publicKey),
+          shareData: shareFile.encrypted,
+        });
+        onComplete?.();
+      } catch (e) {
+        console.error('Failed to save DKG to config:', e);
+        // Don't block — the share file was already downloaded
+        onComplete?.();
+      }
       setShowPasswordModal(false);
     } catch (e) {
       dispatch({ type: 'SET_ERROR', error: `Encryption failed: ${e instanceof Error ? e.message : String(e)}` });
       setShowPasswordModal(false);
     }
-  }, [state.share, state.publicKey, state.level, state.threshold, state.parties]);
+  }, [state.share, state.publicKey, state.level, state.threshold, state.parties, onComplete]);
 
   // ── Render ──
 
