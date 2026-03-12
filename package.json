@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "build:offline": "vite build --config vite.config.offline.ts",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "dev:backend": "cd backend && npm run dev",
+    "dev:relay": "cd relay && go run . -addr :8081"
   },
   "dependencies": {
     "@btc-vision/post-quantum": "file:vendor/post-quantum",

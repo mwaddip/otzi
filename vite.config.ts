@@ -6,4 +6,13 @@ export default defineConfig({
   build: {
     target: 'es2022',
   },
+  server: {
+    proxy: {
+      '/api': 'http://localhost:8080',
+      '/ws': {
+        target: 'ws://localhost:8080',
+        ws: true,
+      },
+    },
+  },
 });
