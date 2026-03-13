@@ -9,7 +9,8 @@ import type { DecryptedShare } from '../lib/share-crypto';
 import type { SendPrefill } from '../App';
 import { OtziWordmark, ThemeToggle } from '../App';
 
-const RELAY_URL = import.meta.env.VITE_RELAY_URL as string || 'ws://localhost:8080/ws';
+const RELAY_URL = import.meta.env.VITE_RELAY_URL as string
+  || `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
 const TXMSG_PREFIX = 'TXMSG:';
 
 interface Props {

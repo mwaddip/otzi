@@ -49,7 +49,8 @@ import { OtziWordmark } from '../App';
 
 // ── Constants ──
 
-const RELAY_URL = import.meta.env.VITE_RELAY_URL as string || 'ws://localhost:8080/ws';
+const RELAY_URL = import.meta.env.VITE_RELAY_URL as string
+  || `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
 
 // ── Types ──
 
