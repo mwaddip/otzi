@@ -110,15 +110,6 @@ function getSecurityLevel(level: number): number {
 }
 
 /**
- * The default K_iter from the library (e.g. 3 for 2-of-3) is tuned for the
- * sign() convenience method which retries up to 500 times internally.
- * For the interactive multi-round protocol where each retry requires full
- * blob re-exchange, we override K_iter to 20 for a near-100% single-attempt
- * success rate.  Both parties must use the same value.
- */
-const INTERACTIVE_K_ITER = 20;
-
-/**
  * Create a new signing session.
  */
 export function createSession(
@@ -128,7 +119,6 @@ export function createSession(
 ): SigningSession {
   const secLevel = getSecurityLevel(share.level);
   const instance = ThresholdMLDSA.create(secLevel, share.threshold, share.parties);
-  (instance.params as { K_iter: number }).K_iter = INTERACTIVE_K_ITER;
   return {
     instance,
     message,
@@ -174,8 +164,10 @@ export function round1(session: SigningSession): string {
 export function round2(session: SigningSession): string {
   if (!session.round1State) throw new Error('round1 not completed');
 
-  // Collect hashes in activePartyIds order
-  const orderedHashes: Uint8Array[] = session.activePartyIds.map(id => {
+  // Canonically sort party IDs — noble protocol requires consistent ordering
+  const sortedPartyIds = [...session.activePartyIds].sort((a, b) => a - b);
+
+  const orderedHashes: Uint8Array[] = sortedPartyIds.map(id => {
     const hash = session.collectedRound1Hashes.get(id);
     if (!hash) throw new Error(`Missing round1 hash from party ${id}`);
     return hash;
@@ -183,7 +175,7 @@ export function round2(session: SigningSession): string {
 
   const result = session.instance.round2(
     session.share.keyShare,
-    session.activePartyIds,
+    sortedPartyIds,
     session.message,
     orderedHashes,
     session.round1State,
@@ -208,8 +200,10 @@ export function round3(session: SigningSession): string {
   if (!session.round1State) throw new Error('round1 not completed');
   if (!session.round2State) throw new Error('round2 not completed');
 
-  // Collect commitments in activePartyIds order
-  const orderedCommitments: Uint8Array[] = session.activePartyIds.map(id => {
+  // Canonically sort party IDs — must match round2 ordering
+  const sortedPartyIds = [...session.activePartyIds].sort((a, b) => a - b);
+
+  const orderedCommitments: Uint8Array[] = sortedPartyIds.map(id => {
     const c = session.collectedRound2Commitments.get(id);
     if (!c) throw new Error(`Missing round2 commitment from party ${id}`);
     return c;
@@ -237,14 +231,16 @@ export function round3(session: SigningSession): string {
  * Returns the signature, or null if this attempt failed (retry from round1).
  */
 export function combine(session: SigningSession): Uint8Array | null {
-  // Collect commitments and responses in activePartyIds order
-  const orderedCommitments: Uint8Array[] = session.activePartyIds.map(id => {
+  // Canonically sort party IDs — must match round2/round3 ordering
+  const sortedPartyIds = [...session.activePartyIds].sort((a, b) => a - b);
+
+  const orderedCommitments: Uint8Array[] = sortedPartyIds.map(id => {
     const c = session.collectedRound2Commitments.get(id);
     if (!c) throw new Error(`Missing commitment from party ${id}`);
     return c;
   });
 
-  const orderedResponses: Uint8Array[] = session.activePartyIds.map(id => {
+  const orderedResponses: Uint8Array[] = sortedPartyIds.map(id => {
     const r = session.collectedRound3Responses.get(id);
     if (!r) throw new Error(`Missing response from party ${id}`);
     return r;
@@ -328,6 +324,42 @@ export function addBlob(session: SigningSession, blob: string, expectedRound?: n
     default:
       return { ok: false, error: `Unknown round: ${env.round}` };
   }
+}
+
+/**
+ * Attempt signing up to maxAttempts times.
+ * Each failed combine() resets round state and retries from round1.
+ */
+export async function signWithRetry(
+  session: SigningSession,
+  onRound: (round: number, blob: string) => Promise<void>,
+  waitForRound: (round: number) => Promise<void>,
+  maxAttempts = 10,
+): Promise<Uint8Array> {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    // Reset round state for retry
+    session.round1State?.destroy();
+    session.round2State?.destroy();
+    session.round1State = null;
+    session.round2State = null;
+    session.myRound1Hash = null;
+    session.myRound2Commitment = null;
+    session.myRound3Response = null;
+    session.collectedRound1Hashes.clear();
+    session.collectedRound2Commitments.clear();
+    session.collectedRound3Responses.clear();
+
+    await onRound(1, round1(session));
+    await waitForRound(1);
+    await onRound(2, round2(session));
+    await waitForRound(2);
+    await onRound(3, round3(session));
+    await waitForRound(3);
+
+    const sig = combine(session);
+    if (sig) return sig;
+  }
+  throw new Error(`Signing failed after ${maxAttempts} attempts — all parties must restart`);
 }
 
 /**

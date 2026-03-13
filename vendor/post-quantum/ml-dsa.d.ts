@@ -43,4 +43,3 @@ export declare const ml_dsa65: DSA;
 /** ML-DSA-87 for 256-bit security level. OK after 2030, as per ASD. */
 export declare const ml_dsa87: DSA;
 export {};
-//# sourceMappingURL=ml-dsa.d.ts.map

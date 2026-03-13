@@ -60,4 +60,3 @@ export declare const slh_dsa_sha2_192s: SphincsSigner;
 export declare const slh_dsa_sha2_256f: SphincsSigner;
 /** SLH-DSA: 256-bit small SHA2 version. */
 export declare const slh_dsa_sha2_256s: SphincsSigner;
-//# sourceMappingURL=slh-dsa.d.ts.map

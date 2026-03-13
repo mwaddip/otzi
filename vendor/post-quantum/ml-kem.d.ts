@@ -18,4 +18,3 @@ export declare const ml_kem512: KEM;
 export declare const ml_kem768: KEM;
 /** ML-KEM-1024 for 256-bit security level. OK after 2030, as per ASD. */
 export declare const ml_kem1024: KEM;
-//# sourceMappingURL=ml-kem.d.ts.map

@@ -18,6 +18,14 @@ import {
   type DKGPhase3Private,
   type DKGPhase4Broadcast,
 } from '@btc-vision/post-quantum/threshold-ml-dsa.js';
+import { sha256 } from '@noble/hashes/sha2.js';
+
+function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i]! ^ b[i]!;
+  return diff === 0;
+}
 
 // ── Helpers ──
 
@@ -185,6 +193,7 @@ export function decodePhase2Private(blob: string): DKGPhase2Private | null {
 // ── Phase 3: Private masks ──
 
 const N_COEFFS = 256;
+const Q = 8380417;
 
 export function encodePhase3Private(
   priv: DKGPhase3Private,
@@ -216,26 +225,46 @@ export function encodePhase3Private(
   const buf = new Uint8Array(total);
   let pos = 0;
   for (const p of parts) { buf.set(p, pos); pos += p.length; }
-  return encodeEnvelope('p3priv', priv.fromGeneratorId, targetPartyId, sessionId, buf);
+  // Append SHA-256 checksum for integrity verification
+  const checksum = sha256(buf);
+  const withChecksum = new Uint8Array(buf.length + 32);
+  withChecksum.set(buf);
+  withChecksum.set(checksum, buf.length);
+  return encodeEnvelope('p3priv', priv.fromGeneratorId, targetPartyId, sessionId, withChecksum);
 }
 
 export function decodePhase3Private(blob: string): DKGPhase3Private | null {
   const env = decodeEnvelope(blob);
   if (!env || env.type !== 'p3priv') return null;
-  const data = fromHex(env.data);
+  const raw = fromHex(env.data);
+  if (raw.length < 32) return null;
+  // Verify SHA-256 checksum
+  const payload = raw.slice(0, raw.length - 32);
+  const receivedChecksum = raw.slice(raw.length - 32);
+  if (!equalBytes(sha256(payload), receivedChecksum)) {
+    console.error('Phase 3 blob integrity check failed');
+    return null;
+  }
   let pos = 0;
-  const fromGeneratorId = data[pos++]!;
+  const fromGeneratorId = payload[pos++]!;
   const maskPieces = new Map<number, Int32Array[]>();
-  while (pos + 3 <= data.length) {
-    const bitmask = data[pos]! | (data[pos + 1]! << 8);
+  while (pos + 3 <= payload.length) {
+    const bitmask = payload[pos]! | (payload[pos + 1]! << 8);
     pos += 2;
-    const numPolys = data[pos++]!;
+    const numPolys = payload[pos++]!;
     const polys: Int32Array[] = [];
     for (let p = 0; p < numPolys; p++) {
       const poly = new Int32Array(N_COEFFS);
-      const view = new DataView(data.buffer, data.byteOffset + pos, N_COEFFS * 4);
+      const view = new DataView(payload.buffer, payload.byteOffset + pos, N_COEFFS * 4);
       for (let i = 0; i < N_COEFFS; i++) {
         poly[i] = view.getInt32(i * 4, true);
+      }
+      // Validate coefficient in [0, Q)
+      for (let i = 0; i < N_COEFFS; i++) {
+        if (poly[i]! < 0 || poly[i]! >= Q) {
+          console.error('Invalid polynomial coefficient in phase 3 blob');
+          return null;
+        }
       }
       polys.push(poly);
       pos += N_COEFFS * 4;

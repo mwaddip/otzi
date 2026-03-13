@@ -1,10 +1,10 @@
 /**
  * AES-256-GCM encryption/decryption for PERMAFROST share files.
  * Uses Web Crypto API (available in all modern browsers).
- * Key derivation: PBKDF2 (100k iterations, SHA-256) from password.
+ * Key derivation: PBKDF2 (600k iterations, SHA-256) from password.
  */
 
-const PBKDF2_ITERATIONS = 100_000;
+const PBKDF2_ITERATIONS = 600_000;
 const SALT_BYTES = 16;
 const IV_BYTES = 12;
 

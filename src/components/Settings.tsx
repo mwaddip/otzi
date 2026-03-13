@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { getConfig, getWalletBalance, getBalances, resetInstance, updateContracts } from '../lib/api';
+import { getConfig, getWalletBalance, getBalances, resetInstance, updateContracts, updateHosting, removeHosting } from '../lib/api';
 import { OP20_METHODS } from '../lib/op20-methods';
 import type { VaultConfig, ContractConfig } from '../lib/vault-types';
 import type { SendPrefill } from '../App';
@@ -134,6 +134,9 @@ export function Settings({ onBack, onSend }: Props) {
         </div>
       )}
 
+      {/* Hosting */}
+      <HostingManager config={config} onConfigUpdate={setConfig} />
+
       {/* Contracts */}
       <ContractManager
         contracts={config.contracts}
@@ -180,6 +183,121 @@ export function Settings({ onBack, onSend }: Props) {
               </button>
             </div>
           </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Hosting Manager ──
+
+function HostingManager({ config, onConfigUpdate }: { config: VaultConfig; onConfigUpdate: (c: VaultConfig) => void }) {
+  const hosting = config.hosting;
+  const [domain, setDomain] = useState(hosting?.domain || '');
+  const [httpsEnabled, setHttpsEnabled] = useState(hosting?.httpsEnabled || false);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+
+  const hasChanges = domain !== (hosting?.domain || '') || httpsEnabled !== (hosting?.httpsEnabled || false);
+
+  const handleSave = async () => {
+    setSaving(true);
+    setError('');
+    setMessage('');
+    try {
+      const result = await updateHosting(domain, httpsEnabled);
+      onConfigUpdate(result.config);
+      if (result.warning) {
+        setMessage(result.warning);
+      } else {
+        setMessage(httpsEnabled ? 'Domain configured with HTTPS. Certificate provisioning started.' : 'Domain configured.');
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleRemove = async () => {
+    setSaving(true);
+    setError('');
+    setMessage('');
+    try {
+      await removeHosting();
+      setDomain('');
+      setHttpsEnabled(false);
+      onConfigUpdate({ ...config, hosting: undefined });
+      setMessage('Hosting configuration removed.');
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="card">
+      <h2>Hosting</h2>
+      <p style={{ fontSize: 13, color: 'var(--white-dim)', marginBottom: 16 }}>
+        Configure a domain for external access. HTTPS uses Let's Encrypt automatic certificates via Caddy.
+      </p>
+
+      <div className="form-row">
+        <label>
+          Domain
+          <input
+            value={domain}
+            onChange={e => setDomain(e.target.value)}
+            placeholder="e.g. vault.example.com"
+          />
+        </label>
+      </div>
+
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, cursor: 'pointer', marginBottom: 16 }}>
+        <input
+          type="checkbox"
+          checked={httpsEnabled}
+          onChange={e => setHttpsEnabled(e.target.checked)}
+          disabled={!domain.trim()}
+        />
+        Enable HTTPS (Let's Encrypt)
+      </label>
+
+      {httpsEnabled && domain.trim() && (
+        <div style={{ fontSize: 12, color: 'var(--white-dim)', marginBottom: 16, padding: '8px 12px', background: 'var(--gray-dark)', borderRadius: 6 }}>
+          Ports 80 and 443 must be publicly reachable for certificate issuance. DNS for <strong>{domain}</strong> must point to this server.
+        </div>
+      )}
+
+      {hosting?.httpsStatus === 'active' && (
+        <div style={{ fontSize: 13, color: 'var(--green)', marginBottom: 12 }}>HTTPS active</div>
+      )}
+      {hosting?.httpsStatus === 'error' && (
+        <div className="warning" style={{ marginBottom: 12 }}>{hosting.httpsError || 'Certificate error'}</div>
+      )}
+
+      {error && <div className="warning" style={{ marginBottom: 12 }}>{error}</div>}
+      {message && <div style={{ fontSize: 13, color: 'var(--accent)', marginBottom: 12 }}>{message}</div>}
+
+      <div style={{ display: 'flex', gap: 12 }}>
+        <button
+          className="btn btn-primary"
+          style={{ flex: 1 }}
+          onClick={handleSave}
+          disabled={saving || !hasChanges}
+        >
+          {saving ? <span className="spinner" /> : 'Save'}
+        </button>
+        {hosting && (
+          <button
+            className="btn btn-secondary"
+            onClick={handleRemove}
+            disabled={saving}
+          >
+            Remove
+          </button>
         )}
       </div>
     </div>

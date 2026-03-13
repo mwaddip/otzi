@@ -1093,29 +1093,38 @@ export function DKGWizard({ onComplete }: DKGWizardProps = {}) {
           <h2>Start Ceremony</h2>
           <p>Choose how parties will communicate during the DKG ceremony.</p>
 
+          <div className="form-row" style={{ marginBottom: 16 }}>
+            <label>
+              Session Code
+              <input
+                type="text"
+                autoFocus
+                placeholder="Paste session code to join"
+                maxLength={6}
+                value={relayJoinCode}
+                onChange={e => {
+                  const val = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                  setRelayJoinCode(val);
+                  setRelayError('');
+                  if (val.length >= 6) {
+                    setTransportMode('relay-join');
+                  }
+                }}
+                style={{ fontFamily: 'monospace', fontSize: 18, letterSpacing: '0.15em', textTransform: 'uppercase', textAlign: 'center' }}
+              />
+            </label>
+          </div>
+
           <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--white-dim)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-            Online (Relay)
+            Or start a new session
           </div>
-          <div style={{ display: 'flex', gap: 12, marginBottom: 16 }}>
-            <button
-              className="btn btn-primary"
-              style={{ flex: 1 }}
-              onClick={() => setTransportMode('relay-create')}
-            >
-              Create Session
-            </button>
-            <button
-              className="btn btn-secondary"
-              style={{ flex: 1 }}
-              onClick={() => setTransportMode('relay-join')}
-            >
-              Join Session
-            </button>
-          </div>
-          <p style={{ fontSize: 13, color: 'var(--white-dim)', marginBottom: 24 }}>
-            Blobs are exchanged automatically via an encrypted WebSocket relay.
-            No blob data ever leaves the encrypted channel.
-          </p>
+          <button
+            className="btn btn-primary btn-full"
+            style={{ marginBottom: 16 }}
+            onClick={() => setTransportMode('relay-create')}
+          >
+            Create Session
+          </button>
 
           <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--white-dim)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
             Offline (Manual)

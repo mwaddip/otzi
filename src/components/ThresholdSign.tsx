@@ -88,6 +88,7 @@ export function ShareImport({ onShareLoaded }: ShareImportProps) {
         <label>Password</label>
         <input
           ref={passwordRef}
+          autoFocus
           type="password"
           placeholder="Share file password"
           value={password}

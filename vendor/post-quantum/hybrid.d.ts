@@ -108,4 +108,3 @@ export declare const QSFMLKEM768P256: KEM;
 export declare const QSFMLKEM1024P384: KEM;
 export declare const KitchenSinkMLKEM768X25519: KEM;
 export {};
-//# sourceMappingURL=hybrid.d.ts.map

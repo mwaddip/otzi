@@ -79,4 +79,3 @@ export declare const EMPTY: Uint8Array;
 export declare function getMessage(msg: Uint8Array, ctx?: Uint8Array): Uint8Array;
 export declare function checkHash(hash: CHash, requiredStrength?: number): void;
 export declare function getMessagePrehash(hash: CHash, msg: Uint8Array, ctx?: Uint8Array): Uint8Array;
-//# sourceMappingURL=utils.d.ts.map

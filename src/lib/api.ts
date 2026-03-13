@@ -124,6 +124,20 @@ export const broadcastTx = (data: {
     body: JSON.stringify(data),
   });
 
+// ── Hosting ──
+
+export const getHosting = () =>
+  json<{ hosting: import('./vault-types.js').HostingConfig | null }>('/hosting');
+
+export const updateHosting = (domain: string, httpsEnabled: boolean) =>
+  json<{ ok: true; warning?: string; config: import('./vault-types.js').VaultConfig }>('/hosting', {
+    method: 'POST',
+    body: JSON.stringify({ domain, httpsEnabled }),
+  });
+
+export const removeHosting = () =>
+  json<{ ok: true }>('/hosting', { method: 'DELETE' });
+
 // ── Reset ──
 
 export const resetInstance = () =>

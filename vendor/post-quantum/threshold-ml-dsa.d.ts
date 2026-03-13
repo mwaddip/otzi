@@ -291,4 +291,3 @@ export declare class ThresholdMLDSA {
     /** Get the byte size of a packed response from round3. */
     get responseByteLength(): number;
 }
-//# sourceMappingURL=threshold-ml-dsa.d.ts.map

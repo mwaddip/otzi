@@ -30,6 +30,13 @@ export interface ContractConfig {
   methods: string[];
 }
 
+export interface HostingConfig {
+  domain: string;
+  httpsEnabled: boolean;
+  httpsStatus?: 'pending' | 'active' | 'error';
+  httpsError?: string;
+}
+
 export interface VaultConfig {
   version: number;
   network: NetworkName;
@@ -38,6 +45,7 @@ export interface VaultConfig {
   wallet?: WalletConfig;
   permafrost?: PermafrostConfig;
   contracts: ContractConfig[];
+  hosting?: HostingConfig;
 }
 
 export function defaultConfig(network: NetworkName, storageMode: StorageMode): VaultConfig {

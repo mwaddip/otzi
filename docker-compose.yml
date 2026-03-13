@@ -3,11 +3,16 @@ services:
     build: .
     restart: unless-stopped
     ports:
+      - "80:80"
+      - "443:443"
       - "8080:8080"
     volumes:
       - permafrost-data:/data
     environment:
       - NODE_ENV=production
+      - DATA_DIR=/data
+      - CADDYFILE_PATH=/etc/caddy/Caddyfile
+      - XDG_DATA_HOME=/data/caddy
 
 volumes:
   permafrost-data:

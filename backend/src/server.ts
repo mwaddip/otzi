@@ -7,6 +7,7 @@ import { configRoutes } from './routes/config.js';
 import { walletRoutes } from './routes/wallet.js';
 import { txRoutes } from './routes/tx.js';
 import { balanceRoutes } from './routes/balances.js';
+import { hostingRoutes } from './routes/hosting.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT || '8080', 10);
@@ -25,6 +26,7 @@ app.use('/api', configRoutes(store));
 app.use('/api/wallet', walletRoutes(store));
 app.use('/api/tx', txRoutes(store));
 app.use('/api/balances', balanceRoutes(store));
+app.use('/api/hosting', hostingRoutes(store));
 
 // Proxy WebSocket to relay
 const wsProxy = createProxyMiddleware({

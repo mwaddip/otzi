@@ -31,4 +31,3 @@ export declare const genCrystals: <T extends TypedArray>(opts: CrystalOpts<T>) =
 };
 export declare const XOF128: XOF;
 export declare const XOF256: XOF;
-//# sourceMappingURL=_crystals.d.ts.map

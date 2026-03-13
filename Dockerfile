@@ -20,6 +20,7 @@ COPY relay/*.go ./
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /relay .
 
 FROM node:20-alpine
+RUN apk add --no-cache caddy
 WORKDIR /app
 COPY --from=frontend-build /app/dist ./dist
 COPY --from=backend-build /app/dist ./backend
@@ -27,7 +28,8 @@ COPY --from=backend-build /app/node_modules ./backend/node_modules
 COPY --from=relay-build /relay /usr/local/bin/relay
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
+RUN mkdir -p /etc/caddy /data/caddy
 
-EXPOSE 8080
+EXPOSE 80 443 8080
 VOLUME /data
 ENTRYPOINT ["/entrypoint.sh"]
