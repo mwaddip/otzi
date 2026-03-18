@@ -6,22 +6,36 @@
 import type { VaultConfig, NetworkName, StorageMode, ContractConfig } from './vault-types.js';
 
 const BASE = '/api';
-const ADMIN_TOKEN_KEY = 'permafrost-admin-token';
+const SESSION_TOKEN_KEY = 'permafrost-session-token';
+const SESSION_ROLE_KEY = 'permafrost-session-role';
 
 function getAdminToken(): string | null {
-  try { return sessionStorage.getItem(ADMIN_TOKEN_KEY); } catch { return null; }
+  try { return sessionStorage.getItem(SESSION_TOKEN_KEY); } catch { return null; }
 }
 
 export function setAdminToken(token: string): void {
-  try { sessionStorage.setItem(ADMIN_TOKEN_KEY, token); } catch { /* ignore */ }
+  try { sessionStorage.setItem(SESSION_TOKEN_KEY, token); } catch { /* ignore */ }
 }
 
 export function clearAdminToken(): void {
-  try { sessionStorage.removeItem(ADMIN_TOKEN_KEY); } catch { /* ignore */ }
+  try { sessionStorage.removeItem(SESSION_TOKEN_KEY); } catch { /* ignore */ }
 }
 
 export function hasAdminToken(): boolean {
   return !!getAdminToken();
+}
+
+export function getSessionRole(): string | null {
+  try { return sessionStorage.getItem(SESSION_ROLE_KEY); } catch { return null; }
+}
+
+export function setSessionRole(role: string): void {
+  try { sessionStorage.setItem(SESSION_ROLE_KEY, role); } catch { /* ignore */ }
+}
+
+export function clearSession(): void {
+  clearAdminToken();
+  try { sessionStorage.removeItem(SESSION_ROLE_KEY); } catch { /* ignore */ }
 }
 
 async function json<T>(path: string, init?: RequestInit): Promise<T> {
@@ -51,10 +65,18 @@ export const getStatus = () => json<StatusResponse>('/status');
 
 // ── Init ──
 
-export const initInstance = (network: NetworkName, storageMode: StorageMode, password?: string, adminPassword?: string) =>
+export const initInstance = (
+  network: NetworkName,
+  storageMode: StorageMode,
+  password?: string,
+  adminPassword?: string,
+  authMode?: 'password' | 'wallet',
+  walletAddress?: string,
+  walletLabel?: string,
+) =>
   json<{ ok: true }>('/init', {
     method: 'POST',
-    body: JSON.stringify({ network, storageMode, password, adminPassword }),
+    body: JSON.stringify({ network, storageMode, password, adminPassword, authMode, walletAddress, walletLabel }),
   });
 
 // ── Admin ──
@@ -168,6 +190,50 @@ export const updateHosting = (domain: string, httpsEnabled: boolean) =>
 
 export const removeHosting = () =>
   json<{ ok: true }>('/hosting', { method: 'DELETE' });
+
+// ── Wallet Auth ──
+
+export const getChallenge = () =>
+  json<{ challenge: string }>('/auth/challenge');
+
+export const verifyAuth = (challenge: string, signature: string, publicKey: string) =>
+  json<{ authenticated: boolean; needsInvite?: boolean; token?: string; role?: string; address?: string; label?: string }>('/auth/verify', {
+    method: 'POST',
+    body: JSON.stringify({ challenge, signature, publicKey }),
+  });
+
+export const redeemInvite = (challenge: string, signature: string, publicKey: string, inviteCode: string, label?: string) =>
+  json<{ authenticated: boolean; token?: string; role?: string; address?: string; label?: string }>('/auth/redeem', {
+    method: 'POST',
+    body: JSON.stringify({ challenge, signature, publicKey, inviteCode, label }),
+  });
+
+export const getAuthMe = () =>
+  json<{ authenticated: boolean; role?: string; address?: string }>('/auth/me');
+
+// ── Users (admin) ──
+
+export const listUsers = () => json<{ users: Array<{ address: string; role: string; label: string }> }>('/users');
+export const addUser = (address: string, role: string, label: string) =>
+  json<{ ok: true }>('/users', { method: 'POST', body: JSON.stringify({ address, role, label }) });
+export const removeUser = (address: string) =>
+  json<{ ok: true }>(`/users/${encodeURIComponent(address)}`, { method: 'DELETE' });
+export const updateUserRole = (address: string, role: string) =>
+  json<{ ok: true }>(`/users/${encodeURIComponent(address)}`, { method: 'PATCH', body: JSON.stringify({ role }) });
+
+// ── Invites (admin) ──
+
+export const listInvites = () => json<{ invites: Array<{ code: string; role: string; usesLeft: number; expiresAt: number }> }>('/invites');
+export const createInvite = (maxUses: number, expiresAt: number, role?: string) =>
+  json<{ ok: true; invite: { code: string } }>('/invites', { method: 'POST', body: JSON.stringify({ maxUses, expiresAt, role }) });
+export const deleteInvite = (code: string) =>
+  json<{ ok: true }>(`/invites/${code}`, { method: 'DELETE' });
+
+// ── Visibility (admin) ──
+
+export const getVisibility = () => json<{ everybodyCanRead: boolean }>('/invites/settings/visibility');
+export const setVisibility = (everybodyCanRead: boolean) =>
+  json<{ ok: true }>('/invites/settings/visibility', { method: 'POST', body: JSON.stringify({ everybodyCanRead }) });
 
 // ── Reset ──
 
