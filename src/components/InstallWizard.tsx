@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { initInstance, getChallenge, verifyAuth, setAdminToken, setSessionRole } from '../lib/api';
+import { initInstance } from '../lib/api';
 import type { NetworkName, StorageMode } from '../lib/vault-types';
 import { OtziWordmark } from '../App';
 
@@ -12,12 +12,6 @@ function hexToBytes(hex: string): Uint8Array {
   const bytes = new Uint8Array(hex.length / 2);
   for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
   return bytes;
-}
-
-function uint8ToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]!);
-  return btoa(binary);
 }
 
 interface Props {
@@ -91,29 +85,8 @@ export function InstallWizard({ onComplete }: Props) {
         authMode === 'wallet' ? 'Admin' : undefined,
       );
 
-      // If wallet mode, auto-authenticate so the user skips the WalletAuth gate
-      if (authMode === 'wallet') {
-        const wallet = (window as unknown as {
-          opnet?: {
-            web3: { signMLDSAMessage(hex: string): Promise<{ signature: string; publicKey: string }> };
-          };
-        }).opnet;
-        if (wallet) {
-          const { challenge } = await getChallenge();
-          const message = `PERMAFROST auth ${challenge}`;
-          const msgBytes = new TextEncoder().encode(message);
-          const hashBuf = await crypto.subtle.digest('SHA-256', msgBytes);
-          const messageHex = bytesToHex(new Uint8Array(hashBuf));
-          const signed = await wallet.web3.signMLDSAMessage(messageHex);
-          const signature = uint8ToBase64(hexToBytes(signed.signature));
-          const publicKey = uint8ToBase64(hexToBytes(signed.publicKey));
-          const result = await verifyAuth(challenge, signature, publicKey);
-          if (result.authenticated && result.token && result.role) {
-            setAdminToken(result.token);
-            setSessionRole(result.role);
-          }
-        }
-      }
+      // If wallet mode, the WalletAuth gate will handle authentication
+      // on the next checkStatus() call — no second signature needed
 
       onComplete();
     } catch (e) {
