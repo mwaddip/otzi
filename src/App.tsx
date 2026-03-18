@@ -7,6 +7,7 @@ import { Settings } from './components/Settings';
 import { getStatus } from './lib/api';
 import { WalletAuth } from './components/WalletAuth';
 import { toggleTheme, getTheme } from './lib/theme';
+import type { ManifestConfig } from './lib/manifest-types';
 import './styles/global.css';
 import './styles/ceremony.css';
 
@@ -137,6 +138,32 @@ export function App() {
   }, []);
 
   useEffect(() => { checkStatus(); }, [checkStatus]);
+
+  // Apply manifest theme
+  useEffect(() => {
+    let applied = false;
+    const applyTheme = async () => {
+      try {
+        const { getConfig } = await import('./lib/api');
+        const cfg = await getConfig();
+        const theme = (cfg.manifestConfig as ManifestConfig | undefined)?.manifest?.theme;
+        if (!theme) return;
+        const root = document.documentElement;
+        if (theme.accent) { root.style.setProperty('--accent', theme.accent); applied = true; }
+        if (theme.accentHover) { root.style.setProperty('--accent-hover', theme.accentHover); applied = true; }
+        if (theme.radius) { root.style.setProperty('--radius', theme.radius); applied = true; }
+      } catch { /* no manifest or config not loaded */ }
+    };
+    if (view === 'signing' || view === 'settings') applyTheme();
+    return () => {
+      if (applied) {
+        const root = document.documentElement;
+        root.style.removeProperty('--accent');
+        root.style.removeProperty('--accent-hover');
+        root.style.removeProperty('--radius');
+      }
+    };
+  }, [view]);
 
   const handleSetupComplete = useCallback(() => { checkStatus(); }, [checkStatus]);
 
