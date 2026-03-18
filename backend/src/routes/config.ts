@@ -16,7 +16,7 @@ export function configRoutes(store: ConfigStore, requireAdmin: RequestHandler): 
       const config = store.get();
       const { setupState, storageMode, network } = config;
       const walletConfigured = !!config.wallet;
-      res.json({ state: 'ready', setupState, storageMode, network, walletConfigured });
+      res.json({ state: 'ready', setupState, storageMode, network, walletConfigured, authMode: config.authMode || 'password' });
     } catch {
       // Initialized but not loaded (encrypted-persistent, needs unlock)
       res.json({ state: 'locked' });

@@ -45,6 +45,7 @@ export interface VaultConfig {
   storageMode: StorageMode;
   setupState: SetupState;
   hasAdminPassword?: boolean;
+  authMode?: 'password' | 'wallet';
   wallet?: WalletPublic;
   permafrost?: PermafrostConfig;
   contracts: ContractConfig[];

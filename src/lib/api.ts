@@ -44,6 +44,7 @@ export interface StatusResponse {
   storageMode?: StorageMode;
   network?: NetworkName;
   walletConfigured?: boolean;
+  authMode?: 'password' | 'wallet';
 }
 
 export const getStatus = () => json<StatusResponse>('/status');
