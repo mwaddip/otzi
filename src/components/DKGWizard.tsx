@@ -1063,7 +1063,9 @@ export function DKGWizard({ onComplete }: DKGWizardProps = {}) {
       </div>
       <h1 style={{ textAlign: 'center', fontSize: 18, fontWeight: 500, marginBottom: 0 }}>DKG Ceremony</h1>
       <p className="subtitle">
-        Distributed {state.threshold}-of-{state.parties} threshold ML-DSA key generation
+        {state.step === 'join'
+          ? 'Distributed threshold ML-DSA key generation'
+          : `Distributed ${state.threshold}-of-${state.parties} threshold ML-DSA key generation`}
       </p>
 
       {/* Step dots */}
