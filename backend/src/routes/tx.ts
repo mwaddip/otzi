@@ -111,6 +111,32 @@ export function txRoutes(store: ConfigStore, requireUser: RequestHandler, requir
     }
   });
 
+  /** POST /api/tx/read — read a value from a contract */
+  r.post('/read', async (req: Request, res: Response) => {
+    const { contract: contractAddr, method, abi } = req.body as {
+      contract: string;
+      method: string;
+      abi?: unknown;
+    };
+    try {
+      const config = store.get();
+      const provider = getProvider(config.network);
+      const network = getNetwork(config.network);
+      const contractAbi = abi ? (Array.isArray(abi) ? abi : [abi]) : OP_20_ABI;
+      const contract = getContract(contractAddr, contractAbi as typeof OP_20_ABI, provider, network);
+      type ContractFnMap = Record<string, (...args: unknown[]) => Promise<{ properties: Record<string, unknown> }>>;
+      const c = contract as unknown as ContractFnMap;
+      if (!c[method]) {
+        res.status(400).json({ error: `Method "${method}" not found on contract` });
+        return;
+      }
+      const result = await c[method]!();
+      res.json({ result: result.properties });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
   /** POST /api/tx/broadcast — build tx with ML-DSA sig and broadcast */
   r.post('/broadcast', requireUser, async (req: Request, res: Response) => {
     const { contract: contractAddr, method, params: rawParams, paramTypes, abi, signature, messageHash } = req.body as {

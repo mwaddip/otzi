@@ -50,4 +50,5 @@ export interface VaultConfig {
   permafrost?: PermafrostConfig;
   contracts: ContractConfig[];
   hosting?: HostingConfig;
+  manifestConfig?: import('./manifest-types').ManifestConfig;
 }

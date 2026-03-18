@@ -235,6 +235,23 @@ export const getVisibility = () => json<{ everybodyCanRead: boolean }>('/invites
 export const setVisibility = (everybodyCanRead: boolean) =>
   json<{ ok: true }>('/invites/settings/visibility', { method: 'POST', body: JSON.stringify({ everybodyCanRead }) });
 
+// ── Manifest ──
+
+export const getManifest = () =>
+  json<{ manifestConfig: unknown }>('/manifest');
+
+export const saveManifest = (manifestConfig: unknown) =>
+  json<{ ok: true }>('/manifest', {
+    method: 'POST',
+    body: JSON.stringify({ manifestConfig }),
+  });
+
+export const readContract = (contract: string, method: string, abi?: unknown[]) =>
+  json<{ result: Record<string, unknown> }>('/tx/read', {
+    method: 'POST',
+    body: JSON.stringify({ contract, method, abi }),
+  });
+
 // ── Reset ──
 
 export const resetInstance = () =>

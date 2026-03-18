@@ -48,6 +48,7 @@ export interface VaultConfig {
   permafrost?: PermafrostConfig;
   contracts: ContractConfig[];
   hosting?: HostingConfig;
+  manifestConfig?: unknown;
 }
 
 export function defaultConfig(network: NetworkName, storageMode: StorageMode): VaultConfig {

@@ -179,6 +179,27 @@ export function configRoutes(store: ConfigStore, userStore: UserStore, requireAd
     }
   });
 
+  /** GET /api/manifest — get current manifest config */
+  r.get('/manifest', (_req: Request, res: Response) => {
+    try {
+      const config = store.get();
+      res.json({ manifestConfig: config.manifestConfig || null });
+    } catch (e) {
+      res.status(503).json({ error: (e as Error).message });
+    }
+  });
+
+  /** POST /api/manifest — save manifest config */
+  r.post('/manifest', requireAdmin, (req: Request, res: Response) => {
+    const { manifestConfig } = req.body;
+    try {
+      store.update({ manifestConfig });
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
   /** POST /api/reset — wipe everything */
   r.post('/reset', requireAdmin, (req: Request, res: Response) => {
     const { confirm } = req.body as { confirm: string };
