@@ -6,7 +6,7 @@ import { ConfigStore } from '../lib/config-store.js';
 import { getProvider, getNetwork, generateWallet } from '../lib/opnet-client.js';
 import { ThresholdMLDSASigner } from '../lib/threshold-signer.js';
 
-export function txRoutes(store: ConfigStore, requireAdmin: RequestHandler): Router {
+export function txRoutes(store: ConfigStore, requireUser: RequestHandler, requireAdmin: RequestHandler): Router {
   const r = Router();
 
   // Broadcast lock: messageHash → result (prevents double-broadcast)
@@ -23,7 +23,7 @@ export function txRoutes(store: ConfigStore, requireAdmin: RequestHandler): Rout
   });
 
   /** POST /api/tx/encode — encode calldata from method + params */
-  r.post('/encode', async (req: Request, res: Response) => {
+  r.post('/encode', requireUser, async (req: Request, res: Response) => {
     const { method, params, paramTypes } = req.body as {
       method: string;
       params: string[];
@@ -65,7 +65,7 @@ export function txRoutes(store: ConfigStore, requireAdmin: RequestHandler): Rout
   });
 
   /** POST /api/tx/simulate — simulate a contract call */
-  r.post('/simulate', async (req: Request, res: Response) => {
+  r.post('/simulate', requireUser, async (req: Request, res: Response) => {
     const { contract: contractAddr, method, params: rawParams, paramTypes, abi } = req.body as {
       contract: string;
       method: string;
@@ -112,7 +112,7 @@ export function txRoutes(store: ConfigStore, requireAdmin: RequestHandler): Rout
   });
 
   /** POST /api/tx/broadcast — build tx with ML-DSA sig and broadcast */
-  r.post('/broadcast', requireAdmin, async (req: Request, res: Response) => {
+  r.post('/broadcast', requireUser, async (req: Request, res: Response) => {
     const { contract: contractAddr, method, params: rawParams, paramTypes, abi, signature, messageHash } = req.body as {
       contract: string;
       method: string;

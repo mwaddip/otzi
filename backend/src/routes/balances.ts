@@ -1,14 +1,14 @@
-import { Router, type Request, type Response } from 'express';
+import { Router, type Request, type Response, type RequestHandler } from 'express';
 import { Address } from '@btc-vision/transaction';
 import { getContract, OP_20_ABI } from 'opnet';
 import { ConfigStore } from '../lib/config-store.js';
 import { getProvider, getNetwork } from '../lib/opnet-client.js';
 
-export function balanceRoutes(store: ConfigStore): Router {
+export function balanceRoutes(store: ConfigStore, requireRead: RequestHandler): Router {
   const r = Router();
 
   /** GET /api/balances — OP-20 token balances for the Permafrost address */
-  r.get('/', async (_req: Request, res: Response) => {
+  r.get('/', requireRead, async (_req: Request, res: Response) => {
     try {
       const config = store.get();
       if (!config.permafrost || !config.wallet) {

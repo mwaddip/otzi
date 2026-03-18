@@ -10,6 +10,8 @@ import { walletRoutes } from './routes/wallet.js';
 import { txRoutes } from './routes/tx.js';
 import { balanceRoutes } from './routes/balances.js';
 import { hostingRoutes } from './routes/hosting.js';
+import { authRoutes } from './routes/auth.js';
+import { userRoutes, inviteRoutes } from './routes/users.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT || '8080', 10);
@@ -25,14 +27,17 @@ app.use(express.json({ limit: '10mb' }));
 try { store.load(); } catch { /* not initialized or encrypted — that's fine */ }
 
 // Auth middleware
-const { requireAdmin } = createAuthMiddleware(store, userStore);
+const { requireAdmin, requireUser, requireRead } = createAuthMiddleware(store, userStore);
 
 // API routes
-app.use('/api', configRoutes(store, requireAdmin));
+app.use('/api', configRoutes(store, userStore, requireAdmin));
+app.use('/api/auth', authRoutes(userStore));
+app.use('/api/users', userRoutes(userStore, requireAdmin));
+app.use('/api/invites', inviteRoutes(userStore, requireAdmin));
 app.use('/api/wallet', walletRoutes(store, requireAdmin));
-app.use('/api/tx', txRoutes(store, requireAdmin));
-app.use('/api/balances', balanceRoutes(store));
-app.use('/api/hosting', hostingRoutes(store, requireAdmin));
+app.use('/api/tx', txRoutes(store, requireUser, requireAdmin));
+app.use('/api/balances', balanceRoutes(store, requireRead));
+app.use('/api/hosting', hostingRoutes(store, requireAdmin, requireRead));
 
 // Proxy WebSocket to relay
 const wsProxy = createProxyMiddleware({

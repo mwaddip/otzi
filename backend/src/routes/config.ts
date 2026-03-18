@@ -1,9 +1,10 @@
 import { Router, type Request, type Response, type RequestHandler } from 'express';
 import { ConfigStore } from '../lib/config-store.js';
+import type { UserStore } from '../lib/users.js';
 import { sanitizeConfig, type NetworkName, type StorageMode } from '../lib/types.js';
 import { hashPassword, verifyPassword, createToken } from '../lib/auth.js';
 
-export function configRoutes(store: ConfigStore, requireAdmin: RequestHandler): Router {
+export function configRoutes(store: ConfigStore, userStore: UserStore, requireAdmin: RequestHandler): Router {
   const r = Router();
 
   /** GET /api/status — returns setup state + storage mode */
@@ -25,11 +26,14 @@ export function configRoutes(store: ConfigStore, requireAdmin: RequestHandler): 
 
   /** POST /api/init — first-time setup */
   r.post('/init', (req: Request, res: Response) => {
-    const { network, storageMode, password, adminPassword } = req.body as {
+    const { network, storageMode, password, adminPassword, authMode, walletAddress, walletLabel } = req.body as {
       network: NetworkName;
       storageMode: StorageMode;
       password?: string;
       adminPassword?: string;
+      authMode?: 'password' | 'wallet';
+      walletAddress?: string;
+      walletLabel?: string;
     };
     if (!network || !storageMode) {
       res.status(400).json({ error: 'network and storageMode required' });
@@ -39,13 +43,31 @@ export function configRoutes(store: ConfigStore, requireAdmin: RequestHandler): 
       res.status(400).json({ error: 'password required for encrypted-persistent mode' });
       return;
     }
-    if (!adminPassword) {
-      res.status(400).json({ error: 'adminPassword required' });
-      return;
+
+    const resolvedAuthMode = authMode || 'password';
+
+    if (resolvedAuthMode === 'password') {
+      if (!adminPassword) {
+        res.status(400).json({ error: 'adminPassword required' });
+        return;
+      }
+    } else {
+      if (!walletAddress) {
+        res.status(400).json({ error: 'walletAddress required for wallet auth mode' });
+        return;
+      }
     }
+
     try {
       store.init(network, storageMode, password);
-      store.update({ adminPasswordHash: hashPassword(adminPassword) }, password);
+
+      if (resolvedAuthMode === 'password') {
+        store.update({ adminPasswordHash: hashPassword(adminPassword!), authMode: 'password' }, password);
+      } else {
+        store.update({ authMode: 'wallet' }, password);
+        userStore.addUser(walletAddress!, 'admin', walletLabel || 'Admin');
+      }
+
       res.json({ ok: true });
     } catch (e) {
       res.status(409).json({ error: (e as Error).message });

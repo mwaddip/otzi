@@ -63,11 +63,11 @@ function reloadCaddy(): string | null {
   }
 }
 
-export function hostingRoutes(store: ConfigStore, requireAdmin: RequestHandler): Router {
+export function hostingRoutes(store: ConfigStore, requireAdmin: RequestHandler, requireRead: RequestHandler): Router {
   const r = Router();
 
   /** GET /api/hosting — current hosting config */
-  r.get('/', (_req: Request, res: Response) => {
+  r.get('/', requireRead, (_req: Request, res: Response) => {
     try {
       const config = store.get();
       res.json({ hosting: config.hosting || null });
