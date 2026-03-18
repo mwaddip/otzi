@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { initInstance } from '../lib/api';
+import { initInstance, setAdminToken, setSessionRole } from '../lib/api';
 import type { NetworkName, StorageMode } from '../lib/vault-types';
 import { OtziWordmark } from '../App';
 
@@ -75,7 +75,7 @@ export function InstallWizard({ onComplete }: Props) {
     setLoading(true);
     setError('');
     try {
-      await initInstance(
+      const result = await initInstance(
         network,
         storageMode,
         storageMode === 'encrypted-persistent' ? password : undefined,
@@ -85,8 +85,11 @@ export function InstallWizard({ onComplete }: Props) {
         authMode === 'wallet' ? 'Admin' : undefined,
       );
 
-      // If wallet mode, the WalletAuth gate will handle authentication
-      // on the next checkStatus() call — no second signature needed
+      // If wallet mode, store the session token from init — no second sign needed
+      if (result.token && result.role) {
+        setAdminToken(result.token);
+        setSessionRole(result.role);
+      }
 
       onComplete();
     } catch (e) {

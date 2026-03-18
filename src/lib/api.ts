@@ -74,7 +74,7 @@ export const initInstance = (
   walletAddress?: string,
   walletLabel?: string,
 ) =>
-  json<{ ok: true }>('/init', {
+  json<{ ok: true; token?: string; role?: string; address?: string }>('/init', {
     method: 'POST',
     body: JSON.stringify({ network, storageMode, password, adminPassword, authMode, walletAddress, walletLabel }),
   });

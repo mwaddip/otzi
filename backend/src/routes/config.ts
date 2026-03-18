@@ -63,12 +63,14 @@ export function configRoutes(store: ConfigStore, userStore: UserStore, requireAd
 
       if (resolvedAuthMode === 'password') {
         store.update({ adminPasswordHash: hashPassword(adminPassword!), authMode: 'password' }, password);
+        res.json({ ok: true });
       } else {
         store.update({ authMode: 'wallet' }, password);
         userStore.addUser(walletAddress!, 'admin', walletLabel || 'Admin');
+        // Return a session token immediately — the admin just proved their identity during setup
+        const token = createToken('admin', walletAddress!);
+        res.json({ ok: true, token, role: 'admin', address: walletAddress });
       }
-
-      res.json({ ok: true });
     } catch (e) {
       res.status(409).json({ error: (e as Error).message });
     }
