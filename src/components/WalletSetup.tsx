@@ -88,7 +88,7 @@ export function WalletSetup({ onComplete }: Props) {
           <div className="warning">
             Write down these words and store them securely. This is the ONLY time they will be shown.
           </div>
-          <div className="pubkey-display" style={{ fontSize: 15, lineHeight: 1.8 }}>
+          <div className="pubkey-display" style={{ fontSize: 15, lineHeight: 1.8, wordBreak: 'normal' }}>
             {mnemonic}
           </div>
           {p2tr && (
