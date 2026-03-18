@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { getConfig, getWalletBalance, getBalances, resetInstance, updateContracts, updateHosting, removeHosting, adminUnlock, setAdminToken, clearAdminToken, hasAdminToken, getSessionRole } from '../lib/api';
 import { UserManager } from './UserManager';
+import { ManifestImport } from './ManifestImport';
 import { OP20_METHODS } from '../lib/op20-methods';
 import type { VaultConfig, ContractConfig } from '../lib/vault-types';
 import type { SendPrefill } from '../App';
@@ -204,6 +205,9 @@ export function Settings({ onBack, onSend }: Props) {
           ))}
         </div>
       )}
+
+      {/* Project Manifest */}
+      <ManifestImport disabled={isLocked} />
 
       {/* Hosting */}
       <HostingManager config={config} onConfigUpdate={setConfig} disabled={isLocked} />

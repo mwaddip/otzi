@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { MessageBuilder, type MessageMeta } from './MessageBuilder';
 import { ShareImport, ThresholdSign } from './ThresholdSign';
+import { ManifestView } from './ManifestView';
 import { RelayClient } from '../lib/relay';
 import { getConfig, getWalletBalance, broadcastTx, getBroadcastStatus } from '../lib/api';
 import { toHex } from '../lib/threshold';
 import type { VaultConfig } from '../lib/vault-types';
+import type { ManifestConfig } from '../lib/manifest-types';
 import type { DecryptedShare } from '../lib/share-crypto';
 import type { SendPrefill } from '../App';
 import { OtziWordmark, ThemeToggle } from '../App';
@@ -299,6 +301,25 @@ export function SigningPage({ onSettings, prefill, onPrefillConsumed }: Props) {
       {/* Build phase */}
       {phase === 'build' && (
         <>
+          {config.manifestConfig && (config.manifestConfig as ManifestConfig).addresses &&
+            Object.values((config.manifestConfig as ManifestConfig).addresses).some(a => a) && (
+            <ManifestView
+              config={config.manifestConfig as ManifestConfig}
+              onExecute={(contractAddr, method, params, paramTypes, messageHash, msgBytes) => {
+                setMessageMeta({
+                  contractAddress: contractAddr,
+                  method,
+                  params: Object.fromEntries(params.map((v, i) => [`p${i}`, v])),
+                  paramTypes,
+                  messageHash,
+                });
+                setMessage(msgBytes);
+                setIsInitiator(true);
+                setPhase('sign');
+              }}
+            />
+          )}
+
           <MessageBuilder
             contracts={config.contracts}
             onMessageBuilt={handleMessageBuilt}
