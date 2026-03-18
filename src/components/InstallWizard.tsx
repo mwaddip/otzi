@@ -1,7 +1,24 @@
 import { useState } from 'react';
-import { initInstance } from '../lib/api';
+import { initInstance, getChallenge, verifyAuth, setAdminToken, setSessionRole } from '../lib/api';
 import type { NetworkName, StorageMode } from '../lib/vault-types';
 import { OtziWordmark } from '../App';
+
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  if (hex.startsWith('0x')) hex = hex.slice(2);
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+  return bytes;
+}
+
+function uint8ToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]!);
+  return btoa(binary);
+}
 
 interface Props {
   onComplete: () => void;
@@ -10,6 +27,7 @@ interface Props {
 export function InstallWizard({ onComplete }: Props) {
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [authMode, setAuthMode] = useState<'password' | 'wallet'>('password');
+  // walletAddress is the ML-DSA identity: 0x + hex(SHA256(mldsaPubKey)) — NOT p2tr
   const [walletAddress, setWalletAddress] = useState('');
   const [walletConnecting, setWalletConnecting] = useState(false);
   const [network, setNetwork] = useState<NetworkName>('testnet');
@@ -20,6 +38,33 @@ export function InstallWizard({ onComplete }: Props) {
   const [adminPasswordConfirm, setAdminPasswordConfirm] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  const handleConnectWallet = async () => {
+    const wallet = (window as unknown as {
+      opnet?: {
+        requestAccounts(): Promise<string[]>;
+        web3: { signMLDSAMessage(hex: string): Promise<{ signature: string; publicKey: string }> };
+      };
+    }).opnet;
+    if (!wallet) { setError('OPWallet not detected. Install the OPWallet browser extension.'); return; }
+    setWalletConnecting(true);
+    setError('');
+    try {
+      await wallet.requestAccounts();
+      // Sign a dummy message to extract the ML-DSA public key
+      // We only need the pubkey to derive the wallet address
+      const signed = await wallet.web3.signMLDSAMessage('00'.repeat(32));
+      const pubKeyBytes = hexToBytes(signed.publicKey);
+      // walletAddress = 0x + hex(SHA256(mldsaPubKey)) — NOT p2tr/tweakedPubKey
+      const hashBuf = await crypto.subtle.digest('SHA-256', pubKeyBytes.buffer as ArrayBuffer);
+      const addr = '0x' + bytesToHex(new Uint8Array(hashBuf));
+      setWalletAddress(addr);
+    } catch (e) {
+      setError((e as Error).message || 'Wallet connection rejected');
+    } finally {
+      setWalletConnecting(false);
+    }
+  };
 
   const handleInit = async () => {
     if (storageMode === 'encrypted-persistent') {
@@ -42,6 +87,31 @@ export function InstallWizard({ onComplete }: Props) {
         authMode === 'wallet' ? walletAddress : undefined,
         authMode === 'wallet' ? 'Admin' : undefined,
       );
+
+      // If wallet mode, auto-authenticate so the user skips the WalletAuth gate
+      if (authMode === 'wallet') {
+        const wallet = (window as unknown as {
+          opnet?: {
+            web3: { signMLDSAMessage(hex: string): Promise<{ signature: string; publicKey: string }> };
+          };
+        }).opnet;
+        if (wallet) {
+          const { challenge } = await getChallenge();
+          const message = `PERMAFROST auth ${challenge}`;
+          const msgBytes = new TextEncoder().encode(message);
+          const hashBuf = await crypto.subtle.digest('SHA-256', msgBytes);
+          const messageHex = bytesToHex(new Uint8Array(hashBuf));
+          const signed = await wallet.web3.signMLDSAMessage(messageHex);
+          const signature = uint8ToBase64(hexToBytes(signed.signature));
+          const publicKey = uint8ToBase64(hexToBytes(signed.publicKey));
+          const result = await verifyAuth(challenge, signature, publicKey);
+          if (result.authenticated && result.token && result.role) {
+            setAdminToken(result.token);
+            setSessionRole(result.role);
+          }
+        }
+      }
+
       onComplete();
     } catch (e) {
       setError((e as Error).message);
@@ -98,7 +168,7 @@ export function InstallWizard({ onComplete }: Props) {
                 border: authMode === value ? '1px solid var(--accent)' : '1px solid rgba(237,239,242,0.06)',
               }}>
                 <input type="radio" name="authMode" value={value} checked={authMode === value}
-                  onChange={() => setAuthMode(value)} style={{ marginTop: 4 }} />
+                  onChange={() => { setAuthMode(value); setWalletAddress(''); setError(''); }} style={{ marginTop: 4 }} />
                 <div>
                   <div style={{ fontWeight: 600, fontSize: 14 }}>{label}</div>
                   <div style={{ fontSize: 13, color: 'var(--white-dim)' }}>{desc}</div>
@@ -108,29 +178,20 @@ export function InstallWizard({ onComplete }: Props) {
           </div>
 
           {authMode === 'wallet' && !walletAddress && (
-            <button className="btn btn-primary btn-full" onClick={async () => {
-              const wallet = (window as unknown as { opnet?: { requestAccounts(): Promise<string[]> } }).opnet;
-              if (!wallet) { setError('OPWallet not detected'); return; }
-              setWalletConnecting(true);
-              try {
-                const accounts = await wallet.requestAccounts();
-                if (accounts?.length) setWalletAddress(accounts[0]!);
-              } catch { setError('Wallet connection rejected'); }
-              setWalletConnecting(false);
-            }} disabled={walletConnecting}>
-              {walletConnecting ? <span className="spinner" /> : 'Connect OPWallet'}
+            <button className="btn btn-primary btn-full" onClick={handleConnectWallet} disabled={walletConnecting}>
+              {walletConnecting ? <span className="spinner" /> : 'Connect & Sign with OPWallet'}
             </button>
           )}
 
           {authMode === 'wallet' && walletAddress && (
             <div style={{ padding: 12, background: 'var(--bg-raised)', borderRadius: 'var(--radius)', fontSize: 13 }}>
-              <div style={{ color: 'var(--green)', marginBottom: 4 }}>Wallet connected</div>
-              <div style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--white-dim)' }}>{walletAddress}</div>
+              <div style={{ color: 'var(--green)', marginBottom: 4 }}>Wallet verified</div>
+              <div style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--white-dim)', wordBreak: 'break-all' }}>{walletAddress}</div>
               <div style={{ fontSize: 12, marginTop: 4 }}>This wallet will be the first admin.</div>
             </div>
           )}
 
-          {error && <div className="warning">{error}</div>}
+          {error && <div className="warning" style={{ marginTop: 12 }}>{error}</div>}
 
           <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
             <button className="btn btn-secondary" onClick={() => setStep(1)}>Back</button>

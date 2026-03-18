@@ -81,9 +81,9 @@ interface MLDSALevel {
 }
 
 const MLDSA_LEVELS: ReadonlyMap<number, MLDSALevel> = new Map([
-  [1312, { sigSize: 2420, verify: ml_dsa44.verify, name: 'ML-DSA-44' }],
-  [1952, { sigSize: 3309, verify: ml_dsa65.verify, name: 'ML-DSA-65' }],
-  [2592, { sigSize: 4627, verify: ml_dsa87.verify, name: 'ML-DSA-87' }],
+  [1312, { sigSize: 2420, verify: (s, m, p) => ml_dsa44.verify(s, m, p), name: 'ML-DSA-44' }],
+  [1952, { sigSize: 3309, verify: (s, m, p) => ml_dsa65.verify(s, m, p), name: 'ML-DSA-65' }],
+  [2592, { sigSize: 4627, verify: (s, m, p) => ml_dsa87.verify(s, m, p), name: 'ML-DSA-87' }],
 ]);
 
 export function verifyMLDSA(
