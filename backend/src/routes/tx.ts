@@ -6,6 +6,36 @@ import { ConfigStore } from '../lib/config-store.js';
 import { getProvider, getNetwork, generateWallet } from '../lib/opnet-client.js';
 import { ThresholdMLDSASigner } from '../lib/threshold-signer.js';
 
+// Normalize manifest ABI entries to match opnet SDK format
+const ABI_TYPE_MAP: Record<string, string> = {
+  uint256: 'UINT256', uint8: 'UINT8', uint16: 'UINT16', uint32: 'UINT32',
+  address: 'ADDRESS', bool: 'BOOL', bytes: 'BYTES', string: 'STRING',
+};
+
+function normalizeAbi(raw: unknown[]): unknown[] {
+  return raw.map(entry => {
+    if (typeof entry !== 'object' || !entry) return entry;
+    const e = entry as Record<string, unknown>;
+    return {
+      ...e,
+      type: typeof e.type === 'string' ? e.type.toLowerCase() : e.type,
+      constant: (e.inputs as unknown[] | undefined)?.length === 0,
+      inputs: Array.isArray(e.inputs) ? e.inputs.map((inp: Record<string, unknown>) => ({
+        ...inp, type: ABI_TYPE_MAP[String(inp.type).toLowerCase()] || String(inp.type).toUpperCase(),
+      })) : e.inputs,
+      outputs: Array.isArray(e.outputs) ? e.outputs.map((out: Record<string, unknown>) => ({
+        ...out, type: ABI_TYPE_MAP[String(out.type).toLowerCase()] || String(out.type).toUpperCase(),
+      })) : e.outputs,
+    };
+  });
+}
+
+function resolveAbi(abi: unknown): unknown[] {
+  if (!abi) return OP_20_ABI;
+  const raw = Array.isArray(abi) ? abi : [abi];
+  return normalizeAbi(raw);
+}
+
 export function txRoutes(store: ConfigStore, requireUser: RequestHandler, requireAdmin: RequestHandler): Router {
   const r = Router();
 
@@ -89,7 +119,7 @@ export function txRoutes(store: ConfigStore, requireUser: RequestHandler, requir
       const config = store.get();
       const provider = getProvider(config.network);
       const network = getNetwork(config.network);
-      const contractAbi = abi || OP_20_ABI;
+      const contractAbi = resolveAbi(abi);
 
       // Convert params to proper types expected by OPNet SDK
       const params = (rawParams ?? []).map((val, i) => {
@@ -134,32 +164,7 @@ export function txRoutes(store: ConfigStore, requireUser: RequestHandler, requir
       const config = store.get();
       const provider = getProvider(config.network);
       const network = getNetwork(config.network);
-      // Normalize ABI to match opnet SDK format:
-      // - type: "Function" → "function"
-      // - input/output types: "uint256" → "UINT256", "address" → "ADDRESS", etc.
-      const TYPE_MAP: Record<string, string> = {
-        uint256: 'UINT256', uint8: 'UINT8', uint16: 'UINT16', uint32: 'UINT32',
-        address: 'ADDRESS', bool: 'BOOL', bytes: 'BYTES', string: 'STRING',
-      };
-      function normalizeAbi(raw: unknown[]): unknown[] {
-        return raw.map(entry => {
-          if (typeof entry !== 'object' || !entry) return entry;
-          const e = entry as Record<string, unknown>;
-          return {
-            ...e,
-            type: typeof e.type === 'string' ? e.type.toLowerCase() : e.type,
-            constant: (e.inputs as unknown[] | undefined)?.length === 0,
-            inputs: Array.isArray(e.inputs) ? e.inputs.map((inp: Record<string, unknown>) => ({
-              ...inp, type: TYPE_MAP[String(inp.type).toLowerCase()] || String(inp.type).toUpperCase(),
-            })) : e.inputs,
-            outputs: Array.isArray(e.outputs) ? e.outputs.map((out: Record<string, unknown>) => ({
-              ...out, type: TYPE_MAP[String(out.type).toLowerCase()] || String(out.type).toUpperCase(),
-            })) : e.outputs,
-          };
-        });
-      }
-      const rawAbi = abi ? (Array.isArray(abi) ? abi : [abi]) : OP_20_ABI;
-      const contractAbi = abi ? normalizeAbi(rawAbi as unknown[]) : rawAbi;
+      const contractAbi = resolveAbi(abi);
       const contract = getContract(contractAddr, contractAbi as typeof OP_20_ABI, provider, network);
       type ContractFnMap = Record<string, (...args: unknown[]) => Promise<{ properties: Record<string, unknown> }>>;
       const c = contract as unknown as ContractFnMap;
@@ -218,7 +223,7 @@ export function txRoutes(store: ConfigStore, requireUser: RequestHandler, requir
 
       const provider = getProvider(config.network);
       const network = getNetwork(config.network);
-      const contractAbi = abi || OP_20_ABI;
+      const contractAbi = resolveAbi(abi);
 
       // Reconstruct wallet from mnemonic
       const { wallet, mnemonic } = generateWallet(config.wallet.mnemonic, config.network);
