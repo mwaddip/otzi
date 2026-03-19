@@ -169,35 +169,32 @@ export function App() {
 
   const handleSetupComplete = useCallback(() => { checkStatus(); }, [checkStatus]);
 
+  let content: React.ReactNode;
+
   if (view === 'loading') {
-    return <div className="ceremony"><div className="spinner" /></div>;
+    content = <div className="ceremony"><div className="spinner" /></div>;
+  } else if (view === 'wizard') {
+    content = <InstallWizard onComplete={handleSetupComplete} />;
+  } else if (view === 'unlock') {
+    content = <UnlockScreen onUnlocked={handleSetupComplete} />;
+  } else if (view === 'walletAuth') {
+    content = <WalletAuth onAuthenticated={() => checkStatus()} />;
+  } else if (view === 'wallet') {
+    content = <WalletSetup onComplete={handleSetupComplete} />;
+  } else if (view === 'dkg') {
+    content = <DKGWizard onComplete={handleSetupComplete} />;
+  } else if (view === 'settings') {
+    content = <Settings onBack={() => setView('signing')} onSend={(prefill) => { setSendPrefill(prefill); setView('signing'); }} />;
+  } else {
+    content = <SigningPage onSettings={() => setView('settings')} prefill={sendPrefill} onPrefillConsumed={() => setSendPrefill(null)} />;
   }
 
-  if (view === 'wizard') {
-    return <InstallWizard onComplete={handleSetupComplete} />;
-  }
-
-  if (view === 'unlock') {
-    return <UnlockScreen onUnlocked={handleSetupComplete} />;
-  }
-
-  if (view === 'walletAuth') {
-    return <WalletAuth onAuthenticated={() => checkStatus()} />;
-  }
-
-  if (view === 'wallet') {
-    return <WalletSetup onComplete={handleSetupComplete} />;
-  }
-
-  if (view === 'dkg') {
-    return <DKGWizard onComplete={handleSetupComplete} />;
-  }
-
-  if (view === 'settings') {
-    return <Settings onBack={() => setView('signing')} onSend={(prefill) => { setSendPrefill(prefill); setView('signing'); }} />;
-  }
-
-  return <SigningPage onSettings={() => setView('settings')} prefill={sendPrefill} onPrefillConsumed={() => setSendPrefill(null)} />;
+  return (
+    <>
+      <ThemeToggle />
+      {content}
+    </>
+  );
 }
 
 /** Simple unlock screen for encrypted-persistent mode */

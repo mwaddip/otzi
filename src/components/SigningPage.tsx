@@ -9,7 +9,7 @@ import type { VaultConfig } from '../lib/vault-types';
 import type { ManifestConfig } from '../lib/manifest-types';
 import type { DecryptedShare } from '../lib/share-crypto';
 import type { SendPrefill } from '../App';
-import { OtziWordmark, ThemeToggle } from '../App';
+import { OtziWordmark } from '../App';
 
 const RELAY_URL = import.meta.env.VITE_RELAY_URL as string
   || `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
@@ -287,7 +287,6 @@ export function SigningPage({ onSettings, prefill, onPrefillConsumed }: Props) {
               {(parseInt(balance) / 1e8).toFixed(8)} BTC
             </div>
           )}
-          <ThemeToggle />
           <button
             onClick={onSettings}
             style={{ background: 'none', color: 'var(--gray-light)', fontSize: 20, padding: 4 }}
