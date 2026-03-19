@@ -307,6 +307,13 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
   const [pasteValue, setPasteValue] = useState('');
   const [copied, setCopied] = useState<string | null>(null);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [hostingConfig, setHostingConfig] = useState<import('../lib/vault-types').HostingConfig | null>(null);
+
+  useEffect(() => {
+    import('../lib/api').then(({ getConfig }) =>
+      getConfig().then(c => { if (c.hosting) setHostingConfig(c.hosting); }).catch(() => {})
+    );
+  }, []);
 
   // ── Transport mode state ──
   const [transportMode, setTransportMode] = useState<TransportMode>(
@@ -1191,31 +1198,45 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
           )}
 
           {/* Session created — waiting for parties */}
-          {relaySessionCode && !relayReady && (
+          {relaySessionCode && !relayReady && (() => {
+            // Build join URL from hosting config (runtime state)
+            const h = hostingConfig;
+            const joinUrl = h?.domain
+              ? `${h.httpsEnabled ? 'https' : 'http'}://${h.domain}${h.port && h.port !== 443 && h.port !== 80 ? `:${h.port}` : ''}${h.path || ''}?session=${relaySessionCode}`
+              : relaySessionUrl || null;
+            return (
             <div style={{ marginTop: 16 }}>
               <div style={{ marginBottom: 12 }}>
                 <span style={{ fontSize: 12, color: 'var(--white-dim)' }}>Session Code</span>
-                <div style={{ fontFamily: 'monospace', fontSize: 20, fontWeight: 700, letterSpacing: '0.15em' }}>
+                <div
+                  style={{ fontFamily: 'monospace', fontSize: 20, fontWeight: 700, letterSpacing: '0.15em', cursor: 'pointer' }}
+                  onClick={() => navigator.clipboard.writeText(joinUrl || relaySessionCode)}
+                  title="Click to copy"
+                >
                   {relaySessionCode}
                 </div>
               </div>
-              {relaySessionUrl && (
+              {joinUrl && (
                 <div style={{ marginBottom: 12 }}>
-                  <span style={{ fontSize: 12, color: 'var(--white-dim)' }}>Session URL</span>
-                  <div style={{ fontFamily: 'monospace', fontSize: 12, wordBreak: 'break-all', color: 'var(--white-dim)' }}>
-                    {relaySessionUrl}
+                  <div
+                    style={{ fontFamily: 'monospace', fontSize: 12, wordBreak: 'break-all', color: 'var(--accent)', cursor: 'pointer' }}
+                    onClick={() => navigator.clipboard.writeText(joinUrl)}
+                    title="Click to copy link"
+                  >
+                    {joinUrl}
                   </div>
                 </div>
               )}
               <p style={{ fontSize: 13, color: 'var(--white-dim)' }}>
-                Share this code with {state.parties - 1} other parties.
+                Share this {joinUrl ? 'link' : 'code'} with {state.parties - 1} other parties.
               </p>
               <div style={{ textAlign: 'center', padding: 12 }}>
                 <div className="spinner" style={{ margin: '0 auto 8px' }} />
                 <p style={{ fontSize: 14 }}>{relayStatus || `Waiting for parties... (${relayPartyCount}/${relayPartyTotal})`}</p>
               </div>
             </div>
-          )}
+            );
+          })()}
 
           {/* Ready — show fingerprint */}
           {relayReady && relayFingerprint && (

@@ -446,22 +446,38 @@ export function SigningPage({ onSettings, prefill, onPrefillConsumed, initialSes
 
               {relayState === 'waiting' && (
                 <div style={{ textAlign: 'center' }}>
-                  {relaySessionCode && (
-                    <div style={{ marginBottom: 16 }}>
-                      <div style={{ fontSize: 13, color: 'var(--gray-light)', marginBottom: 4 }}>Session Code</div>
-                      <div
-                        className="pubkey-display"
-                        style={{ fontSize: 24, letterSpacing: 4, cursor: 'pointer' }}
-                        onClick={() => navigator.clipboard.writeText(relaySessionCode)}
-                        title="Click to copy"
-                      >
-                        {relaySessionCode}
+                  {relaySessionCode && (() => {
+                    const h = config.hosting;
+                    const joinUrl = h?.domain
+                      ? `${h.httpsEnabled ? 'https' : 'http'}://${h.domain}${h.port && h.port !== 443 && h.port !== 80 ? `:${h.port}` : ''}${h.path || ''}?session=${relaySessionCode}`
+                      : null;
+                    return (
+                      <div style={{ marginBottom: 16 }}>
+                        <div style={{ fontSize: 13, color: 'var(--gray-light)', marginBottom: 4 }}>Session Code</div>
+                        <div
+                          className="pubkey-display"
+                          style={{ fontSize: 24, letterSpacing: 4, cursor: 'pointer' }}
+                          onClick={() => navigator.clipboard.writeText(joinUrl || relaySessionCode)}
+                          title="Click to copy"
+                        >
+                          {relaySessionCode}
+                        </div>
+                        {joinUrl ? (
+                          <div
+                            style={{ fontSize: 12, color: 'var(--accent)', marginTop: 6, cursor: 'pointer', wordBreak: 'break-all' }}
+                            onClick={() => navigator.clipboard.writeText(joinUrl)}
+                            title="Click to copy link"
+                          >
+                            {joinUrl}
+                          </div>
+                        ) : (
+                          <div style={{ fontSize: 12, color: 'var(--gray-light)', marginTop: 4 }}>
+                            Share this code with other signers
+                          </div>
+                        )}
                       </div>
-                      <div style={{ fontSize: 12, color: 'var(--gray-light)', marginTop: 4 }}>
-                        Share this code with other signers
-                      </div>
-                    </div>
-                  )}
+                    );
+                  })()}
                   <div style={{ fontSize: 14, fontWeight: 600 }}>
                     Waiting for parties... ({relayPartyCount}/{relayPartyTotal})
                   </div>
