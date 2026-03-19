@@ -96,7 +96,7 @@ export function Settings({ onBack, onSend }: Props) {
   if (!config) return <div className="ceremony"><div className="spinner" /></div>;
 
   return (
-    <div className="ceremony" style={{ maxWidth: 720 }}>
+    <div className="ceremony" style={{ maxWidth: 1200 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
         <h1>Settings</h1>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -139,129 +139,133 @@ export function Settings({ onBack, onSend }: Props) {
         </div>
       )}
 
-      {/* Network */}
-      <div className="card">
-        <h2>Network</h2>
-        <p>{config.network === 'testnet' ? 'Testnet' : 'Mainnet'} · Storage: {config.storageMode}</p>
-      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 16, alignItems: 'start' }}>
+        {/* ── Left column: Status & Info ── */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {/* Network + Wallet */}
+          <div className="card">
+            <h2>Instance</h2>
+            <p style={{ marginBottom: 12 }}>{config.network === 'testnet' ? 'Testnet' : 'Mainnet'} · Storage: {config.storageMode}</p>
+            {config.wallet ? (
+              <>
+                <div style={{ marginBottom: 8 }}>
+                  <strong style={{ fontSize: 13, color: 'var(--gray-light)' }}>P2TR Address</strong>
+                  <div className="pubkey-display" style={{ fontSize: 12, marginTop: 4 }}>{config.wallet.p2tr}</div>
+                </div>
+                <div>
+                  <strong style={{ fontSize: 13, color: 'var(--gray-light)' }}>BTC Balance</strong>
+                  <div style={{ fontSize: 16, fontWeight: 600, marginTop: 4 }}>{(parseInt(balance) / 1e8).toFixed(8)} BTC</div>
+                </div>
+              </>
+            ) : (
+              <p style={{ fontSize: 13, color: 'var(--white-dim)' }}>No wallet configured.</p>
+            )}
+          </div>
 
-      {/* Wallet */}
-      <div className="card">
-        <h2>Wallet</h2>
-        {config.wallet ? (
-          <>
-            <div style={{ marginBottom: 8 }}>
-              <strong style={{ fontSize: 13, color: 'var(--gray-light)' }}>P2TR Address</strong>
-              <div className="pubkey-display" style={{ fontSize: 12, marginTop: 4 }}>{config.wallet.p2tr}</div>
-            </div>
-            <div>
-              <strong style={{ fontSize: 13, color: 'var(--gray-light)' }}>BTC Balance</strong>
-              <div style={{ fontSize: 16, fontWeight: 600, marginTop: 4 }}>{(parseInt(balance) / 1e8).toFixed(8)} BTC</div>
-            </div>
-          </>
-        ) : (
-          <p>No wallet configured. Signatures are display-only.</p>
-        )}
-      </div>
-
-      {/* Permafrost */}
-      {config.permafrost && (
-        <div className="card">
-          <h2>Permafrost</h2>
-          <p>{config.permafrost.threshold}-of-{config.permafrost.parties} threshold · Security level {config.permafrost.level}</p>
-          {opnetIdentity && (
-            <div style={{ marginTop: 8 }}>
-              <strong style={{ fontSize: 13, color: 'var(--gray-light)' }}>OPNet Identity</strong>
-              <div className="pubkey-display" style={{ fontSize: 12, marginTop: 4 }}>{opnetIdentity}</div>
+          {/* Permafrost */}
+          {config.permafrost && (
+            <div className="card">
+              <h2>Permafrost</h2>
+              <p>{config.permafrost.threshold}-of-{config.permafrost.parties} threshold · Security level {config.permafrost.level}</p>
+              {opnetIdentity && (
+                <div style={{ marginTop: 8 }}>
+                  <strong style={{ fontSize: 13, color: 'var(--gray-light)' }}>OPNet Identity</strong>
+                  <div className="pubkey-display" style={{ fontSize: 12, marginTop: 4 }}>{opnetIdentity}</div>
+                </div>
+              )}
+              <div style={{ marginTop: 8 }}>
+                <strong style={{ fontSize: 13, color: 'var(--gray-light)' }}>Combined ML-DSA Public Key</strong>
+                <div className="pubkey-display" style={{ fontSize: 11, marginTop: 4 }}>
+                  {config.permafrost.combinedPubKey.slice(0, 64)}...
+                </div>
+              </div>
             </div>
           )}
-          <div style={{ marginTop: 8 }}>
-            <strong style={{ fontSize: 13, color: 'var(--gray-light)' }}>Combined ML-DSA Public Key</strong>
-            <div className="pubkey-display" style={{ fontSize: 11, marginTop: 4 }}>
-              {config.permafrost.combinedPubKey.slice(0, 64)}...
+
+          {/* OP-20 Balances */}
+          {tokenBalances.length > 0 && (
+            <div className="card">
+              <h2>Token Balances</h2>
+              {tokenBalances.map((t, i) => (
+                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', fontSize: 14 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <span>{t.symbol}</span>
+                    <button
+                      style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 14, padding: 0, lineHeight: 1 }}
+                      onClick={() => onSend({ contractAddress: t.address, method: 'transfer' })}
+                      title="Send"
+                    >
+                      ↗
+                    </button>
+                  </div>
+                  <span style={{ fontFamily: 'monospace' }}>{formatTokenBalance(t.balance, t.decimals)}</span>
+                </div>
+              ))}
             </div>
+          )}
+
+          {/* Users (wallet auth) */}
+          {isWalletAuth && sessionRole === 'admin' && <UserManager />}
+        </div>
+
+        {/* ── Right column: Configuration ── */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {/* Project Manifest */}
+          <ManifestImport disabled={isLocked} />
+
+          {/* Contracts */}
+          <ContractManager
+            contracts={config.contracts}
+            disabled={isLocked}
+            onUpdate={(contracts) => {
+              updateContracts(contracts).then(() => {
+                setConfig(prev => prev ? { ...prev, contracts } : prev);
+              }).catch(e => setError((e as Error).message));
+            }}
+          />
+
+          {/* Hosting */}
+          <HostingManager config={config} onConfigUpdate={setConfig} disabled={isLocked} />
+
+          {/* Reset */}
+          <div className="card" style={isLocked ? { opacity: 0.5, pointerEvents: 'none' } : {}}>
+            <h2>Reset Instance</h2>
+            {resetStep === 0 && (
+              <button className="btn btn-secondary btn-full" style={{ color: 'var(--red)' }} onClick={handleReset} disabled={isLocked}>
+                Reset Instance
+              </button>
+            )}
+            {resetStep === 1 && (
+              <>
+                <div className="warning">This will permanently delete all data: wallet, DKG shares, and configuration.</div>
+                <div style={{ display: 'flex', gap: 12 }}>
+                  <button className="btn btn-secondary" onClick={() => setResetStep(0)}>Cancel</button>
+                  <button className="btn btn-secondary" style={{ color: 'var(--red)', flex: 1 }} onClick={handleReset}>
+                    I understand, continue
+                  </button>
+                </div>
+              </>
+            )}
+            {resetStep === 2 && (
+              <>
+                <div className="warning">Type RESET to confirm.</div>
+                <input
+                  value={resetInput}
+                  onChange={e => setResetInput(e.target.value)}
+                  placeholder="Type RESET"
+                  style={{ width: '100%', marginBottom: 12 }}
+                />
+                {error && <div className="warning">{error}</div>}
+                <div style={{ display: 'flex', gap: 12 }}>
+                  <button className="btn btn-secondary" onClick={() => { setResetStep(0); setResetInput(''); }}>Cancel</button>
+                  <button className="btn btn-secondary" style={{ color: 'var(--red)', flex: 1 }} onClick={handleReset}>
+                    Confirm Reset
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
-      )}
-
-      {/* OP-20 Balances */}
-      {tokenBalances.length > 0 && (
-        <div className="card">
-          <h2>Token Balances</h2>
-          {tokenBalances.map((t, i) => (
-            <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', fontSize: 14 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <span>{t.symbol}</span>
-                <button
-                  style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 14, padding: 0, lineHeight: 1 }}
-                  onClick={() => onSend({ contractAddress: t.address, method: 'transfer' })}
-                  title="Send"
-                >
-                  ↗
-                </button>
-              </div>
-              <span style={{ fontFamily: 'monospace' }}>{formatTokenBalance(t.balance, t.decimals)}</span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Project Manifest */}
-      <ManifestImport disabled={isLocked} />
-
-      {/* Hosting */}
-      <HostingManager config={config} onConfigUpdate={setConfig} disabled={isLocked} />
-
-      {/* Contracts */}
-      <ContractManager
-        contracts={config.contracts}
-        disabled={isLocked}
-        onUpdate={(contracts) => {
-          updateContracts(contracts).then(() => {
-            setConfig(prev => prev ? { ...prev, contracts } : prev);
-          }).catch(e => setError((e as Error).message));
-        }}
-      />
-
-      {isWalletAuth && sessionRole === 'admin' && <UserManager />}
-
-      {/* Reset */}
-      <div className="card" style={isLocked ? { opacity: 0.5, pointerEvents: 'none' } : {}}>
-        <h2>Reset Instance</h2>
-        {resetStep === 0 && (
-          <button className="btn btn-secondary btn-full" style={{ color: 'var(--red)' }} onClick={handleReset} disabled={isLocked}>
-            Reset Instance
-          </button>
-        )}
-        {resetStep === 1 && (
-          <>
-            <div className="warning">This will permanently delete all data: wallet, DKG shares, and configuration.</div>
-            <div style={{ display: 'flex', gap: 12 }}>
-              <button className="btn btn-secondary" onClick={() => setResetStep(0)}>Cancel</button>
-              <button className="btn btn-secondary" style={{ color: 'var(--red)', flex: 1 }} onClick={handleReset}>
-                I understand, continue
-              </button>
-            </div>
-          </>
-        )}
-        {resetStep === 2 && (
-          <>
-            <div className="warning">Type RESET to confirm.</div>
-            <input
-              value={resetInput}
-              onChange={e => setResetInput(e.target.value)}
-              placeholder="Type RESET"
-              style={{ width: '100%', marginBottom: 12 }}
-            />
-            {error && <div className="warning">{error}</div>}
-            <div style={{ display: 'flex', gap: 12 }}>
-              <button className="btn btn-secondary" onClick={() => { setResetStep(0); setResetInput(''); }}>Cancel</button>
-              <button className="btn btn-secondary" style={{ color: 'var(--red)', flex: 1 }} onClick={handleReset}>
-                Confirm Reset
-              </button>
-            </div>
-          </>
-        )}
       </div>
     </div>
   );
