@@ -153,6 +153,10 @@ export function WalletAuth({ onAuthenticated }: Props) {
                 onChange={e => {
                   const val = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
                   setSessionCode(val);
+                  // Session code = temporary access token — skip wallet auth entirely
+                  if (val.length >= 6) {
+                    onAuthenticated('', '', val);
+                  }
                 }}
                 placeholder="Paste session code to join ceremony"
                 maxLength={6}
