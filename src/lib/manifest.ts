@@ -103,22 +103,28 @@ export function formatReadValue(value: unknown, format?: ManifestRead['format'],
   const raw = String(value ?? '');
   if (map && map[raw]) return map[raw];
 
-  const n = BigInt(raw || '0');
+  let n: bigint;
+  try { n = BigInt(raw || '0'); } catch { return raw; }
+
   switch (format) {
     case 'token8':
     case 'btc8':
     case 'price8': {
-      const whole = n / 100_000_000n;
-      const frac = n % 100_000_000n;
+      const negative = n < 0n;
+      const abs = negative ? -n : n;
+      const whole = abs / 100_000_000n;
+      const frac = abs % 100_000_000n;
       const fracStr = frac.toString().padStart(8, '0').replace(/0+$/, '') || '0';
-      const num = `${whole}.${fracStr}`;
+      const num = `${negative ? '-' : ''}${whole}.${fracStr}`;
       if (format === 'btc8') return `${num} BTC`;
       if (format === 'price8') return `$${num}`;
       return num;
     }
     case 'percent8': {
-      const pct = Number(n) / 1_000_000;
-      return `${pct.toFixed(2)}%`;
+      // Use BigInt division to avoid Number overflow on huge values
+      const whole = n / 1_000_000n;
+      const frac = ((n % 1_000_000n) * 100n) / 1_000_000n;
+      return `${whole}.${frac.toString().padStart(2, '0')}%`;
     }
     case 'address':
       return raw.length > 16 ? `${raw.slice(0, 10)}...${raw.slice(-6)}` : raw;

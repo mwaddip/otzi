@@ -25,7 +25,7 @@ export function ManifestView({ config, onExecute, disabled, isAdmin }: Props) {
       {/* Project header */}
       <div style={{ marginBottom: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
-          {manifest.icon && <img src={manifest.icon} alt="" style={{ width: 24, height: 24, borderRadius: 4 }} />}
+          {manifest.icon && <img src={manifest.icon} alt="" style={{ width: 24, height: 24, borderRadius: 4 }} onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />}
           <h2 style={{ margin: 0, fontSize: 16 }}>{manifest.name}</h2>
           {loading && <span className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />}
         </div>
@@ -46,7 +46,7 @@ export function ManifestView({ config, onExecute, disabled, isAdmin }: Props) {
                   <div style={{ fontSize: 11, color: 'var(--gray-light)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                     {entry.label}
                   </div>
-                  <div style={{ fontSize: 15, fontWeight: 600, fontFamily: 'monospace', marginTop: 2 }}>
+                  <div style={{ fontSize: 15, fontWeight: 600, fontFamily: 'monospace', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={value !== undefined ? formatReadValue(value, readDef?.format, entry.map) : ''}>
                     {value !== undefined
                       ? formatReadValue(value, readDef?.format, entry.map)
                       : '—'}
