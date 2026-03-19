@@ -206,6 +206,62 @@ Produces a self-contained HTML file in `dist-offline/` that runs from `file://` 
 - **Broadcast locking**: Server-side lock prevents double-broadcast of the same transaction.
 - **No secrets on server**: The relay holds no cryptographic material. Share passwords never leave the browser.
 
+## Project Manifests
+
+Any OPNet project can plug into Otzi by writing a `.otzi.json` manifest file — no custom code needed. The manifest declares contracts, operations, live state reads, conditional visibility, and optional theming. Otzi imports it and renders a fully functional operations interface with threshold signing and broadcasting built in.
+
+### Quick example
+
+```json
+{
+  "version": 1,
+  "name": "My Token",
+  "contracts": {
+    "token": { "label": "MyToken", "abi": "OP_20" }
+  },
+  "reads": {
+    "supply": { "contract": "token", "method": "totalSupply", "returns": "uint256", "format": "token8" }
+  },
+  "status": [
+    { "label": "Total Supply", "read": "supply" }
+  ],
+  "operations": [
+    {
+      "id": "transfer",
+      "label": "Transfer",
+      "contract": "token",
+      "method": "transfer",
+      "params": [
+        { "name": "to", "type": "address", "label": "Recipient" },
+        { "name": "amount", "type": "uint256", "label": "Amount", "scale": 1e8 }
+      ]
+    }
+  ]
+}
+```
+
+Save as `my-token.otzi.json`, import in **Settings > Project Manifest**, configure the contract address, and you're signing and broadcasting transactions through threshold ML-DSA.
+
+### What manifests can do
+
+- **Contracts** — define any number of contracts with custom ABIs or built-in shorthands (`OP_20`, `OP_721`)
+- **State reads** — poll contract values on a timer with format hints (token amounts, BTC values, percentages, prices)
+- **Status panel** — dashboard showing live contract state with optional value-to-label mapping
+- **Operations** — parameter inputs with auto-fill from contract addresses, settings, or live reads; scale multipliers for decimal tokens; confirmation prompts for destructive actions
+- **Conditions** — show/hide operations based on contract state (equality, comparison, block windows, boolean combinators)
+- **Theme** — override accent color, background, and border radius to match your project's branding
+
+### Schema
+
+The full JSON Schema is at [`docs/otzi-manifest-schema.json`](docs/otzi-manifest-schema.json). Use it to validate manifests or as a reference for all available fields.
+
+### Import flow
+
+1. Go to **Settings > Project Manifest > Import .otzi.json**
+2. Select your manifest file
+3. Configure contract addresses for each contract key
+4. Save — operations appear on the main signing page
+
 ## License
 
 MIT
