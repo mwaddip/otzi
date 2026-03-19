@@ -225,7 +225,7 @@ export function Settings({ onBack, onSend }: Props) {
           />
 
           {/* Hosting */}
-          <HostingManager config={config} onConfigUpdate={setConfig} disabled={isLocked} />
+          <HostingManager config={config} onConfigUpdate={setConfig} disabled={isLocked} isWalletAuth={isWalletAuth} />
 
           {/* Reset */}
           <div className="card" style={isLocked ? { opacity: 0.5, pointerEvents: 'none' } : {}}>
@@ -273,13 +273,22 @@ export function Settings({ onBack, onSend }: Props) {
 
 // ── Hosting Manager ──
 
-function HostingManager({ config, onConfigUpdate, disabled }: { config: VaultConfig; onConfigUpdate: (c: VaultConfig) => void; disabled?: boolean }) {
+function HostingManager({ config, onConfigUpdate, disabled, isWalletAuth }: { config: VaultConfig; onConfigUpdate: (c: VaultConfig) => void; disabled?: boolean; isWalletAuth?: boolean }) {
   const hosting = config.hosting;
   const [domain, setDomain] = useState(hosting?.domain || '');
   const [httpsEnabled, setHttpsEnabled] = useState(hosting?.httpsEnabled || false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [everybodyCanRead, setEverybodyCanRead] = useState(true);
+
+  useEffect(() => {
+    if (isWalletAuth) {
+      import('../lib/api').then(({ getVisibility }) =>
+        getVisibility().then(r => setEverybodyCanRead(r.everybodyCanRead)).catch(() => {})
+      );
+    }
+  }, [isWalletAuth]);
 
   const hasChanges = domain !== (hosting?.domain || '') || httpsEnabled !== (hosting?.httpsEnabled || false);
 
@@ -382,6 +391,24 @@ function HostingManager({ config, onConfigUpdate, disabled }: { config: VaultCon
           </button>
         )}
       </div>
+
+      {isWalletAuth && (
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer', marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--gray-dark)' }}>
+          <input
+            type="checkbox"
+            checked={everybodyCanRead}
+            onChange={async () => {
+              const newVal = !everybodyCanRead;
+              try {
+                const { setVisibility } = await import('../lib/api');
+                await setVisibility(newVal);
+                setEverybodyCanRead(newVal);
+              } catch { /* ignore */ }
+            }}
+          />
+          Allow unauthenticated visitors to view dashboard and settings (read-only)
+        </label>
+      )}
     </div>
   );
 }

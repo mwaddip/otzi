@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { listUsers, addUser, removeUser, updateUserRole, listInvites, createInvite, deleteInvite, getVisibility, setVisibility } from '../lib/api';
+import { listUsers, addUser, removeUser, updateUserRole, listInvites, createInvite, deleteInvite } from '../lib/api';
 
 interface User { address: string; role: string; label: string }
 interface Invite { code: string; role: string; usesLeft: number; expiresAt: number }
@@ -7,7 +7,6 @@ interface Invite { code: string; role: string; usesLeft: number; expiresAt: numb
 export function UserManager() {
   const [users, setUsers] = useState<User[]>([]);
   const [invites, setInvites] = useState<Invite[]>([]);
-  const [everybodyCanRead, setEverybodyCanRead] = useState(true);
   const [error, setError] = useState('');
 
   // Add user form
@@ -22,7 +21,6 @@ export function UserManager() {
   useEffect(() => {
     listUsers().then(r => setUsers(r.users)).catch(() => {});
     listInvites().then(r => setInvites(r.invites)).catch(() => {});
-    getVisibility().then(r => setEverybodyCanRead(r.everybodyCanRead)).catch(() => {});
   }, []);
 
   const handleAddUser = async () => {
@@ -63,26 +61,9 @@ export function UserManager() {
     } catch (e) { setError((e as Error).message); }
   };
 
-  const handleVisibilityToggle = async () => {
-    const newVal = !everybodyCanRead;
-    try {
-      await setVisibility(newVal);
-      setEverybodyCanRead(newVal);
-    } catch (e) { setError((e as Error).message); }
-  };
-
   return (
     <>
       {error && <div className="warning" style={{ marginBottom: 12 }}>{error}</div>}
-
-      {/* Visibility toggle */}
-      <div className="card">
-        <h2>Public Visibility</h2>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, cursor: 'pointer' }}>
-          <input type="checkbox" checked={everybodyCanRead} onChange={handleVisibilityToggle} />
-          Allow unauthenticated visitors to view dashboard and settings (read-only)
-        </label>
-      </div>
 
       {/* Users */}
       <div className="card">
