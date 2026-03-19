@@ -100,7 +100,11 @@ export function ThemeToggle() {
 export function App() {
   const [view, setView] = useState<View>('loading');
   const [sendPrefill, setSendPrefill] = useState<SendPrefill | null>(null);
-  const [pendingSessionCode, setPendingSessionCode] = useState<string | null>(null);
+  const [pendingSessionCode, setPendingSessionCode] = useState<string | null>(() => {
+    const params = new URLSearchParams(window.location.search);
+    const s = params.get('session');
+    return s && s.trim().length >= 6 ? s.trim().toUpperCase() : null;
+  });
 
   const checkStatus = useCallback(async () => {
     try {
@@ -110,8 +114,8 @@ export function App() {
       } else if (status.state === 'locked') {
         setView('unlock');
       } else if (status.setupState) {
-        // Check wallet auth
-        if (status.authMode === 'wallet') {
+        // Check wallet auth — skip if session code present (it's a temporary access token)
+        if (status.authMode === 'wallet' && !pendingSessionCode) {
           try {
             const { getAuthMe } = await import('./lib/api');
             const me = await getAuthMe();

@@ -309,27 +309,29 @@ export function SigningPage({ onSettings, prefill, onPrefillConsumed, initialSes
       {/* Build phase */}
       {phase === 'build' && (
         <>
-          {/* Session code join — at the top since most users are joiners */}
-          <div className="card" style={{ marginBottom: 16 }}>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <input
-                autoFocus
-                value={pendingJoinCode}
-                onChange={e => {
-                  const val = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
-                  setPendingJoinCode(val);
-                  if (val.length >= 6) {
-                    setIsInitiator(false);
-                    setPhase('sign');
-                  }
-                }}
-                placeholder="Paste session code to join"
-                maxLength={6}
-                style={{ flex: 1, letterSpacing: '0.15em', fontSize: 18, textAlign: 'center', textTransform: 'uppercase', fontFamily: 'monospace' }}
-                onKeyDown={e => e.key === 'Enter' && handleJoinSession()}
-              />
+          {/* Session code join — only when DKG is complete (signing possible) */}
+          {config.permafrost && (
+            <div className="card" style={{ marginBottom: 16 }}>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input
+                  autoFocus
+                  value={pendingJoinCode}
+                  onChange={e => {
+                    const val = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                    setPendingJoinCode(val);
+                    if (val.length >= 6) {
+                      setIsInitiator(false);
+                      setPhase('sign');
+                    }
+                  }}
+                  placeholder="Paste session code to join"
+                  maxLength={6}
+                  style={{ flex: 1, letterSpacing: '0.15em', fontSize: 18, textAlign: 'center', textTransform: 'uppercase', fontFamily: 'monospace' }}
+                  onKeyDown={e => e.key === 'Enter' && handleJoinSession()}
+                />
+              </div>
             </div>
-          </div>
+          )}
 
           {config.manifestConfig && (config.manifestConfig as ManifestConfig).addresses &&
             Object.values((config.manifestConfig as ManifestConfig).addresses).some(a => a) && (
