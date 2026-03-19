@@ -180,12 +180,12 @@ export const broadcastTx = (data: {
 // ── Hosting ──
 
 export const getHosting = () =>
-  json<{ hosting: import('./vault-types.js').HostingConfig | null }>('/hosting');
+  json<{ hosting: import('./vault-types.js').HostingConfig | null; hasCaddy: boolean }>('/hosting');
 
-export const updateHosting = (domain: string, httpsEnabled: boolean) =>
+export const updateHosting = (domain: string, httpsEnabled: boolean, port?: number, path?: string) =>
   json<{ ok: true; warning?: string; config: import('./vault-types.js').VaultConfig }>('/hosting', {
     method: 'POST',
-    body: JSON.stringify({ domain, httpsEnabled }),
+    body: JSON.stringify({ domain, httpsEnabled, port: port || undefined, path: path || undefined }),
   });
 
 export const removeHosting = () =>

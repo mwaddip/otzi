@@ -276,33 +276,39 @@ export function Settings({ onBack, onSend }: Props) {
 function HostingManager({ config, onConfigUpdate, disabled, isWalletAuth }: { config: VaultConfig; onConfigUpdate: (c: VaultConfig) => void; disabled?: boolean; isWalletAuth?: boolean }) {
   const hosting = config.hosting;
   const [domain, setDomain] = useState(hosting?.domain || '');
+  const [port, setPort] = useState(hosting?.port?.toString() || '');
+  const [path, setPath] = useState(hosting?.path || '');
   const [httpsEnabled, setHttpsEnabled] = useState(hosting?.httpsEnabled || false);
+  const [hasCaddy, setHasCaddy] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [everybodyCanRead, setEverybodyCanRead] = useState(true);
 
   useEffect(() => {
-    if (isWalletAuth) {
-      import('../lib/api').then(({ getVisibility }) =>
-        getVisibility().then(r => setEverybodyCanRead(r.everybodyCanRead)).catch(() => {})
-      );
-    }
+    import('../lib/api').then(({ getHosting, getVisibility }) => {
+      getHosting().then(r => setHasCaddy(r.hasCaddy)).catch(() => {});
+      if (isWalletAuth) getVisibility().then(r => setEverybodyCanRead(r.everybodyCanRead)).catch(() => {});
+    });
   }, [isWalletAuth]);
 
-  const hasChanges = domain !== (hosting?.domain || '') || httpsEnabled !== (hosting?.httpsEnabled || false);
+  const hasChanges = domain !== (hosting?.domain || '')
+    || port !== (hosting?.port?.toString() || '')
+    || path !== (hosting?.path || '')
+    || httpsEnabled !== (hosting?.httpsEnabled || false);
 
   const handleSave = async () => {
     setSaving(true);
     setError('');
     setMessage('');
     try {
-      const result = await updateHosting(domain, httpsEnabled);
+      const portNum = port ? parseInt(port, 10) : undefined;
+      const result = await updateHosting(domain, httpsEnabled, portNum, path);
       onConfigUpdate(result.config);
       if (result.warning) {
         setMessage(result.warning);
       } else {
-        setMessage(httpsEnabled ? 'Domain configured with HTTPS. Certificate provisioning started.' : 'Domain configured.');
+        setMessage(httpsEnabled ? 'Domain configured with HTTPS. Certificate provisioning started.' : 'Hosting configured.');
       }
     } catch (e) {
       setError((e as Error).message);
@@ -317,8 +323,7 @@ function HostingManager({ config, onConfigUpdate, disabled, isWalletAuth }: { co
     setMessage('');
     try {
       await removeHosting();
-      setDomain('');
-      setHttpsEnabled(false);
+      setDomain(''); setPort(''); setPath(''); setHttpsEnabled(false);
       onConfigUpdate({ ...config, hosting: undefined });
       setMessage('Hosting configuration removed.');
     } catch (e) {
@@ -332,63 +337,67 @@ function HostingManager({ config, onConfigUpdate, disabled, isWalletAuth }: { co
     <div className="card" style={disabled ? { opacity: 0.5, pointerEvents: 'none' } : {}}>
       <h2>Hosting</h2>
       <p style={{ fontSize: 13, color: 'var(--white-dim)', marginBottom: 16 }}>
-        Configure a domain for external access. HTTPS uses Let's Encrypt automatic certificates via Caddy.
+        Configure how this instance is accessed externally.
       </p>
 
       <div className="form-row">
         <label>
           Domain
-          <input
-            value={domain}
-            onChange={e => setDomain(e.target.value)}
-            placeholder="e.g. vault.example.com"
-          />
+          <input value={domain} onChange={e => setDomain(e.target.value)} placeholder="e.g. vault.example.com" />
         </label>
       </div>
 
-      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, cursor: 'pointer', marginBottom: 16 }}>
-        <input
-          type="checkbox"
-          checked={httpsEnabled}
-          onChange={e => setHttpsEnabled(e.target.checked)}
-          disabled={!domain.trim()}
-        />
-        Enable HTTPS (Let's Encrypt)
-      </label>
-
-      {httpsEnabled && domain.trim() && (
-        <div style={{ fontSize: 12, color: 'var(--white-dim)', marginBottom: 16, padding: '8px 12px', background: 'var(--gray-dark)', borderRadius: 6 }}>
-          Ports 80 and 443 must be publicly reachable for certificate issuance. DNS for <strong>{domain}</strong> must point to this server.
+      <div style={{ display: 'flex', gap: 8 }}>
+        <div className="form-row" style={{ width: 100 }}>
+          <label>
+            Port
+            <input value={port} onChange={e => setPort(e.target.value.replace(/\D/g, ''))} placeholder="80" />
+          </label>
         </div>
-      )}
+        <div className="form-row" style={{ flex: 1 }}>
+          <label>
+            Path
+            <input value={path} onChange={e => setPath(e.target.value)} placeholder="/vault" />
+          </label>
+        </div>
+      </div>
 
-      {hosting?.httpsStatus === 'active' && (
-        <div style={{ fontSize: 13, color: 'var(--green)', marginBottom: 12 }}>HTTPS active</div>
-      )}
-      {hosting?.httpsStatus === 'error' && (
-        <div className="warning" style={{ marginBottom: 12 }}>{hosting.httpsError || 'Certificate error'}</div>
+      {hasCaddy && (
+        <>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, cursor: 'pointer', marginBottom: 16 }}>
+            <input
+              type="checkbox"
+              checked={httpsEnabled}
+              onChange={e => setHttpsEnabled(e.target.checked)}
+              disabled={!domain.trim()}
+            />
+            Enable HTTPS (Let's Encrypt)
+          </label>
+
+          {httpsEnabled && domain.trim() && (
+            <div style={{ fontSize: 12, color: 'var(--white-dim)', marginBottom: 16, padding: '8px 12px', background: 'var(--gray-dark)', borderRadius: 6 }}>
+              Ports 80 and 443 must be publicly reachable for certificate issuance. DNS for <strong>{domain}</strong> must point to this server.
+            </div>
+          )}
+
+          {hosting?.httpsStatus === 'active' && (
+            <div style={{ fontSize: 13, color: 'var(--green)', marginBottom: 12 }}>HTTPS active</div>
+          )}
+          {hosting?.httpsStatus === 'error' && (
+            <div className="warning" style={{ marginBottom: 12 }}>{hosting.httpsError || 'Certificate error'}</div>
+          )}
+        </>
       )}
 
       {error && <div className="warning" style={{ marginBottom: 12 }}>{error}</div>}
       {message && <div style={{ fontSize: 13, color: 'var(--accent)', marginBottom: 12 }}>{message}</div>}
 
       <div style={{ display: 'flex', gap: 12 }}>
-        <button
-          className="btn btn-primary"
-          style={{ flex: 1 }}
-          onClick={handleSave}
-          disabled={saving || !hasChanges}
-        >
+        <button className="btn btn-primary" style={{ flex: 1 }} onClick={handleSave} disabled={saving || !hasChanges}>
           {saving ? <span className="spinner" /> : 'Save'}
         </button>
         {hosting && (
-          <button
-            className="btn btn-secondary"
-            onClick={handleRemove}
-            disabled={saving}
-          >
-            Remove
-          </button>
+          <button className="btn btn-secondary" onClick={handleRemove} disabled={saving}>Remove</button>
         )}
       </div>
 

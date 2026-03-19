@@ -32,6 +32,8 @@ export interface ContractConfig {
 
 export interface HostingConfig {
   domain: string;
+  port?: number;
+  path?: string;
   httpsEnabled: boolean;
   httpsStatus?: 'pending' | 'active' | 'error';
   httpsError?: string;
