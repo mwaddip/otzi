@@ -453,24 +453,58 @@ export function ThresholdSign({
     }
   }, [relayClient, broadcastBlob]);
 
-  // Combine
+  // Combine — auto-retry in relay mode by restarting from round 1
+  const combineAttemptRef = useRef(0);
+  const MAX_COMBINE_ATTEMPTS = 50;
+
   const doCombine = useCallback(() => {
     if (!sessionRef.current) return;
     try {
       const sig = combine(sessionRef.current);
       if (sig) {
+        combineAttemptRef.current = 0;
         setSession({ ...sessionRef.current });
         setPhase('complete');
         onSignatureReady(sig);
       } else {
-        setBlobError('All iterations failed norm checks (randomness). Retry from round 1.');
-        setPhase('failed');
+        combineAttemptRef.current++;
+        if (relayClient && combineAttemptRef.current < MAX_COMBINE_ATTEMPTS) {
+          // Auto-retry: reset round state and restart from round 1
+          setBlobError(`Norm check failed (attempt ${combineAttemptRef.current}/${MAX_COMBINE_ATTEMPTS}), retrying...`);
+          const s = sessionRef.current;
+          s.round1State?.destroy();
+          s.round2State?.destroy();
+          s.round1State = null;
+          s.round2State = null;
+          s.myRound1Hash = null;
+          s.myRound2Commitment = null;
+          s.myRound3Response = null;
+          s.collectedRound1Hashes.clear();
+          s.collectedRound2Commitments.clear();
+          s.collectedRound3Responses.clear();
+          s.myRound1Blob = null;
+          s.myRound2Blob = null;
+          s.myRound3Blob = null;
+          // Clear barriers so auto-advance re-evaluates
+          setBarriers({});
+          barrierSentRef.current = {};
+          setPhase('round1');
+          // Relay mode: restart from round 1
+          const blob = round1(s);
+          setSession({ ...s });
+          void broadcastBlob(blob);
+        } else {
+          setBlobError(`Signing failed after ${combineAttemptRef.current} attempts. Click Retry to start over.`);
+          setPhase('failed');
+          combineAttemptRef.current = 0;
+        }
       }
     } catch (err) {
       setBlobError(err instanceof Error ? err.message : 'Combine failed');
       setPhase('failed');
+      combineAttemptRef.current = 0;
     }
-  }, [onSignatureReady]);
+  }, [onSignatureReady, relayClient, broadcastBlob]);
 
   // Retry after failed combine
   const handleRetry = useCallback(() => {

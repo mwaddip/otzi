@@ -281,10 +281,11 @@ export function txRoutes(store: ConfigStore, requireUser: RequestHandler, requir
 
       res.json({ success: true, ...result });
     } catch (e) {
-      const errResult = { error: (e as Error).message };
+      const msg = e instanceof Error ? e.message : typeof e === 'string' ? e : JSON.stringify(e);
+      console.error('[broadcast] error:', msg, e);
       // On error, clear the lock so it can be retried
       if (messageHash) broadcastResults.delete(messageHash);
-      res.status(500).json(errResult);
+      res.status(500).json({ error: msg || 'Broadcast failed (unknown error)' });
     }
   });
 
