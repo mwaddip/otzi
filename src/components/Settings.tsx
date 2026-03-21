@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { getConfig, getWalletBalance, getBalances, resetInstance, updateContracts, updateHosting, removeHosting, adminUnlock, setAdminToken, clearAdminToken, hasAdminToken, getSessionRole } from '../lib/api';
+import { getConfig, getWalletBalance, getBalances, resetInstance, updateContracts, updateHosting, removeHosting, adminUnlock, setAdminToken, clearAdminToken, hasAdminToken, getSessionRole, downloadBackup, restoreBackup } from '../lib/api';
 import { UserManager } from './UserManager';
 import { ManifestImport } from './ManifestImport';
 import { OP20_METHODS } from '../lib/op20-methods';
@@ -226,6 +226,48 @@ export function Settings({ onBack, onSend }: Props) {
 
           {/* Hosting */}
           <HostingManager config={config} onConfigUpdate={setConfig} disabled={isLocked} isWalletAuth={isWalletAuth} />
+
+          {/* Backup & Restore */}
+          <div className="card" style={isLocked ? { opacity: 0.5, pointerEvents: 'none' } : {}}>
+            <h2>Backup</h2>
+            <p style={{ fontSize: 13, color: 'var(--white-dim)', marginBottom: 12 }}>
+              Download a full backup including wallet, DKG keys, contracts, manifest, and users.
+            </p>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn btn-primary" style={{ flex: 1 }} disabled={isLocked} onClick={async () => {
+                try {
+                  const backup = await downloadBackup();
+                  const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `otzi-backup-${new Date().toISOString().slice(0, 10)}.json`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                } catch (e) { setError((e as Error).message); }
+              }}>
+                Download Backup
+              </button>
+              <button className="btn btn-secondary" disabled={isLocked} onClick={() => {
+                const input = document.createElement('input');
+                input.type = 'file';
+                input.accept = '.json';
+                input.onchange = async (e) => {
+                  const file = (e.target as HTMLInputElement).files?.[0];
+                  if (!file) return;
+                  try {
+                    const text = await file.text();
+                    const backup = JSON.parse(text);
+                    await restoreBackup(backup);
+                    window.location.reload();
+                  } catch (err) { setError((err as Error).message); }
+                };
+                input.click();
+              }}>
+                Restore
+              </button>
+            </div>
+          </div>
 
           {/* Reset */}
           <div className="card" style={isLocked ? { opacity: 0.5, pointerEvents: 'none' } : {}}>

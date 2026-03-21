@@ -200,6 +200,55 @@ export function configRoutes(store: ConfigStore, userStore: UserStore, requireAd
     }
   });
 
+  /** GET /api/backup — full backup (config + users) */
+  r.get('/backup', requireAdmin, (_req: Request, res: Response) => {
+    try {
+      const config = store.get();
+      const users = userStore.listUsers();
+      const invites = userStore.listInvites();
+      const everybodyCanRead = userStore.getEverybodyCanRead();
+      const backup = {
+        version: 1,
+        timestamp: Date.now(),
+        config,
+        users: { users, invites, settings: { everybodyCanRead } },
+      };
+      res.json(backup);
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
+  /** POST /api/restore — restore from backup */
+  r.post('/restore', requireAdmin, (req: Request, res: Response) => {
+    const { backup } = req.body as { backup?: { config?: unknown; users?: { users?: unknown[]; invites?: unknown[]; settings?: { everybodyCanRead?: boolean } } } };
+    if (!backup?.config) {
+      res.status(400).json({ error: 'Invalid backup format' });
+      return;
+    }
+    try {
+      // Restore config
+      const config = backup.config as import('../lib/types.js').VaultConfig;
+      store.update(config);
+
+      // Restore users if present
+      if (backup.users?.users && Array.isArray(backup.users.users)) {
+        for (const u of backup.users.users as Array<{ address: string; role: 'admin' | 'user'; label: string }>) {
+          if (!userStore.getUser(u.address)) {
+            userStore.addUser(u.address, u.role, u.label);
+          }
+        }
+      }
+      if (backup.users?.settings?.everybodyCanRead !== undefined) {
+        userStore.setEverybodyCanRead(backup.users.settings.everybodyCanRead);
+      }
+
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
+  });
+
   /** POST /api/reset — wipe everything */
   r.post('/reset', requireAdmin, (req: Request, res: Response) => {
     const { confirm } = req.body as { confirm: string };

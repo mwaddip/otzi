@@ -260,6 +260,17 @@ export const getBlockHeight = () =>
 export const getActiveSessions = () =>
   json<{ active: number }>('/relay/sessions');
 
+// ── Backup ──
+
+export const downloadBackup = () =>
+  json<unknown>('/backup');
+
+export const restoreBackup = (backup: unknown) =>
+  json<{ ok: true }>('/restore', {
+    method: 'POST',
+    body: JSON.stringify({ backup }),
+  });
+
 // ── Reset ──
 
 export const resetInstance = () =>

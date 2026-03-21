@@ -138,7 +138,7 @@ export function InstallWizard({ onComplete }: Props) {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 16 }}>
             {([
               ['password', 'Admin Password', 'Protect settings with a password. Simple setup.'],
-              ['wallet', 'OPWallet (ML-DSA)', 'Authenticate with OPWallet signatures. Role-based access for multiple users.'],
+              ...storageMode !== 'encrypted-portable' ? [['wallet', 'OPWallet (ML-DSA)', 'Authenticate with OPWallet signatures. Role-based access for multiple users.'] as const] : [],
             ] as const).map(([value, label, desc]) => (
               <label key={value} style={{
                 display: 'flex', alignItems: 'flex-start', gap: 12, padding: 12,
@@ -208,7 +208,14 @@ export function InstallWizard({ onComplete }: Props) {
                   name="storageMode"
                   value={value}
                   checked={storageMode === value}
-                  onChange={() => setStorageMode(value)}
+                  onChange={() => {
+                    setStorageMode(value);
+                    // Portable mode doesn't support wallet auth (no persistent server state)
+                    if (value === 'encrypted-portable' && authMode === 'wallet') {
+                      setAuthMode('password');
+                      setWalletAddress('');
+                    }
+                  }}
                   style={{ marginTop: 4 }}
                 />
                 <div>
