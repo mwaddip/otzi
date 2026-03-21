@@ -308,9 +308,7 @@ export function ThresholdSign({
   relayReady: relayReadyProp,
   relayPartyId: _relayPartyId,
 }: ThresholdSignProps) {
-  // relayPartyId is the relay-server-assigned ID (used by the caller for routing);
-  // signing logic uses share.partyId (cryptographic identity) and relayClient.parties.
-  void _relayPartyId;
+  void _relayPartyId; // passed by caller but unused — signing uses share.partyId
   const [phase, setPhase] = useState<SigningPhase>('idle');
   const [session, setSession] = useState<SigningSession | null>(null);
   const [blobError, setBlobError] = useState('');

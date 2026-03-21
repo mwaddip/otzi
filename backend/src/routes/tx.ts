@@ -44,6 +44,11 @@ function resolveAbi(abi: unknown): unknown[] {
   return raw.flatMap(normalizeAbiEntry);
 }
 
+// Transaction fee defaults
+const TX_FEE_RATE = parseInt(process.env.TX_FEE_RATE || '10', 10);
+const TX_PRIORITY_FEE = BigInt(process.env.TX_PRIORITY_FEE || '1000');
+const TX_MAX_SAT_SPEND = BigInt(process.env.TX_MAX_SAT_SPEND || '100000');
+
 export function txRoutes(store: ConfigStore, requireUser: RequestHandler, requireAdmin: RequestHandler): Router {
   const r = Router();
 
@@ -316,9 +321,9 @@ export function txRoutes(store: ConfigStore, requireUser: RequestHandler, requir
         mldsaSigner: thresholdSigner,
         refundTo: config.wallet.p2tr,
         network,
-        feeRate: 10,
-        priorityFee: 1000n,
-        maximumAllowedSatToSpend: 100000n,
+        feeRate: TX_FEE_RATE,
+        priorityFee: TX_PRIORITY_FEE,
+        maximumAllowedSatToSpend: TX_MAX_SAT_SPEND,
         challenge,
       });
 

@@ -37,7 +37,9 @@ export class UserStore {
     if (!existsSync(USERS_PATH)) return;
     try {
       this.db = JSON.parse(readFileSync(USERS_PATH, 'utf8'));
-    } catch { /* corrupt or missing — start fresh */ }
+    } catch (e) {
+      console.warn(`[users] Failed to parse ${USERS_PATH}, starting fresh:`, (e as Error).message);
+    }
   }
 
   private save(): void {
@@ -84,7 +86,8 @@ export class UserStore {
   // ── Invites ──
 
   createInvite(role: Role, maxUses: number, expiresAt: number): Invite {
-    const code = randomBytes(3).toString('hex').toUpperCase();
+    // 5 random bytes → 8 base36 chars (~41 bits of entropy)
+    const code = randomBytes(5).toString('hex').slice(0, 8).toUpperCase();
     const invite: Invite = { code, role, usesLeft: maxUses, expiresAt };
     this.db.invites.push(invite);
     this.save();

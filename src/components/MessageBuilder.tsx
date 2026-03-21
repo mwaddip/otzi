@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { OP20_METHODS, type MethodDef } from '../lib/op20-methods';
 import { encodeTx } from '../lib/api';
+import { fromHex } from '../lib/hex';
 import type { ContractConfig } from '../lib/vault-types';
 import type { SendPrefill } from '../App';
 
@@ -92,7 +93,7 @@ export function MessageBuilder({ contracts, onMessageBuilt, prefill, onPrefillCo
 
       if (mode === 'raw') {
         const hex = rawHex.replace(/^0x/, '');
-        message = new Uint8Array(hex.match(/.{2}/g)!.map(b => parseInt(b, 16)));
+        message = fromHex(hex);
         const hashBuf = await crypto.subtle.digest('SHA-256', new Uint8Array(message).buffer as ArrayBuffer);
         messageHash = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
       } else {
@@ -107,7 +108,7 @@ export function MessageBuilder({ contracts, onMessageBuilt, prefill, onPrefillCo
 
         const encoded = await encodeTx(selectedMethod, paramVals, paramTypes);
         const hex = encoded.calldata;
-        message = new Uint8Array(hex.match(/.{2}/g)!.map(b => parseInt(b, 16)));
+        message = fromHex(hex);
         messageHash = encoded.messageHash;
       }
 

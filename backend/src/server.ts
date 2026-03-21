@@ -24,7 +24,12 @@ const app = express();
 app.use(express.json({ limit: '10mb' }));
 
 // Try to auto-load persistent config on startup
-try { store.load(); } catch { /* not initialized or encrypted — that's fine */ }
+try { store.load(); } catch (e) {
+  const msg = (e as Error).message;
+  if (msg !== 'Not initialized' && msg !== 'Password required to unlock') {
+    console.warn('[startup] Config load failed:', msg);
+  }
+}
 
 // Auth middleware
 const { requireAdmin, requireUser, requireRead } = createAuthMiddleware(store, userStore);
@@ -71,6 +76,15 @@ const server = app.listen(PORT, () => {
 
 // Wire WebSocket upgrade to the proxy
 server.on('upgrade', wsProxy.upgrade);
+
+// Graceful shutdown
+function shutdown() {
+  console.log('Shutting down...');
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(1), 5000); // force after 5s
+}
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
 
 // Export for route registration by other modules
 export { store };
