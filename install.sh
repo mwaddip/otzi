@@ -403,6 +403,17 @@ EOF
     sleep 2
   done
   warn "Health check failed — service may still be starting"
+
+  # Write hosting seed so the backend pre-fills hosting config on first init
+  if [[ -n "$DOMAIN" ]]; then
+    local ssl=true
+    [[ "$BACKEND_PORT" == "80" ]] && ssl=false
+    cat > "${DATA_DIR}/hosting-seed.json" <<SEED
+{"domain":"${DOMAIN}","port":443,"httpsEnabled":${ssl}}
+SEED
+    chown "$SERVICE_USER:$SERVICE_USER" "${DATA_DIR}/hosting-seed.json"
+    ok "Hosting config seeded: ${DOMAIN}"
+  fi
 }
 
 # ── Web server configuration ───────────────────────────────────────────────

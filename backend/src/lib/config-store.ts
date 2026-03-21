@@ -21,6 +21,24 @@ export class ConfigStore {
     if (this.isInitialized()) throw new Error('Already initialized');
     this.config = defaultConfig(network, storageMode);
     this.storageMode = storageMode;
+
+    // Check for hosting seed file (written by install.sh --domain)
+    const seedPath = `${DATA_DIR}/hosting-seed.json`;
+    if (existsSync(seedPath)) {
+      try {
+        const seed = JSON.parse(readFileSync(seedPath, 'utf8'));
+        if (seed.domain) {
+          this.config.hosting = {
+            domain: seed.domain,
+            port: seed.port || undefined,
+            path: seed.path || undefined,
+            httpsEnabled: seed.httpsEnabled ?? true,
+          };
+        }
+        unlinkSync(seedPath);
+      } catch { /* ignore bad seed */ }
+    }
+
     this.persist(password);
   }
 
