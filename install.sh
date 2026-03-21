@@ -3,11 +3,9 @@ set -euo pipefail
 
 # ── Constants ────────────────────────────────────────────────────────────────
 REPO="mwaddip/otzi"
-INSTALL_DIR="/opt/permafrost"
-DATA_DIR="/var/lib/permafrost"
-SERVICE_USER="permafrost"
 NODE_MIN="20"
 GO_MIN="1.23"
+IS_ROOT=$([[ $EUID -eq 0 ]] && echo true || echo false)
 
 # ── Colors ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -34,15 +32,16 @@ Options:
   --deps        Check and install build dependencies (Node 20, Go 1.23)
   --uninstall   Remove PERMAFROST Vault and its services
   --port PORT   Backend port (default: 3100)
-  --domain NAME Domain name for nginx/apache config (default: localhost)
+  --domain NAME Domain name for web server config
   --yes, -y     Skip confirmation prompts
   --help, -h    Show this help
 
 Examples:
-  curl -sL https://github.com/mwaddip/otzi/releases/latest/download/install.sh | sudo bash
-  sudo ./install.sh --port 9080 --domain vault.example.com
-  sudo ./install.sh --deps && sudo ./install.sh --build
-  sudo ./install.sh --uninstall
+  ./install.sh                                      # user-level install
+  ./install.sh --domain vault.example.com           # with domain
+  sudo ./install.sh --domain vault.example.com      # system-wide install
+  ./install.sh --deps                               # check dependencies
+  ./install.sh --build --port 9080                  # build from source
 EOF
   exit 0
 }
@@ -60,8 +59,54 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# ── Root check ──────────────────────────────────────────────────────────────
-[[ $EUID -eq 0 ]] || die "This script must be run as root (use sudo)"
+# ── Paths (root vs user) ─────────────────────────────────────────────────
+if $IS_ROOT; then
+  INSTALL_DIR="/opt/permafrost"
+  DATA_DIR="/var/lib/permafrost"
+  SERVICE_USER="permafrost"
+else
+  INSTALL_DIR="${HOME}/.permafrost"
+  DATA_DIR="${HOME}/.permafrost/data"
+  SERVICE_USER=""
+fi
+
+# ── Deferred root commands (collected when running without sudo) ──────────
+ROOT_CMDS=()
+add_root_cmd() { ROOT_CMDS+=("$1"); }
+
+print_root_commands() {
+  if [[ ${#ROOT_CMDS[@]} -eq 0 ]]; then return; fi
+  echo ""
+  warn "The following commands require root and were skipped:"
+  echo ""
+  for cmd in "${ROOT_CMDS[@]}"; do
+    echo "  sudo $cmd"
+  done
+  echo ""
+  info "Run them manually, or re-run this script with sudo for a fully automated install."
+}
+
+# ── Non-root disclaimer ──────────────────────────────────────────────────
+if ! $IS_ROOT && [[ "$MODE" != "deps" ]] && [[ "$MODE" != "uninstall" ]]; then
+  echo ""
+  echo -e "${BOLD}Running without root${NC}"
+  echo ""
+  echo "  The following steps require root and will be skipped:"
+  echo "  - Creating a system user (permafrost)"
+  echo "  - Installing systemd services (system-wide)"
+  echo "  - Configuring nginx/apache reverse proxy"
+  echo "  - Installing dependencies (--deps mode)"
+  echo ""
+  echo "  Files will be installed to: ${INSTALL_DIR}"
+  echo "  Data directory: ${DATA_DIR}"
+  echo "  User-level systemd services will be used if available."
+  echo ""
+  if ! $YES; then
+    echo -en "${YELLOW}?${NC} Continue without root? [y/N] "
+    read -r answer
+    [[ "$answer" =~ ^[Yy]$ ]] || { info "Aborted. Re-run with sudo for full install."; exit 0; }
+  fi
+fi
 
 # ── Distro detection ───────────────────────────────────────────────────────
 DISTRO="unknown"
@@ -103,7 +148,6 @@ confirm() {
 
 # ── Version helpers ─────────────────────────────────────────────────────────
 version_ge() {
-  # Returns 0 if $1 >= $2 (dotted version comparison)
   printf '%s\n%s\n' "$2" "$1" | sort -V -C
 }
 
@@ -144,56 +188,47 @@ check_go() {
 
 # ── Dependency installation ─────────────────────────────────────────────────
 install_node() {
+  if ! $IS_ROOT; then die "Installing Node.js requires root. Run: sudo $0 --deps"; fi
   info "Installing Node.js ${NODE_MIN}.x..."
   case $DISTRO_FAMILY in
     debian)
       curl -fsSL "https://deb.nodesource.com/setup_${NODE_MIN}.x" | bash -
-      apt-get install -y nodejs
-      ;;
+      apt-get install -y nodejs ;;
     rhel)
       curl -fsSL "https://rpm.nodesource.com/setup_${NODE_MIN}.x" | bash -
-      $PKG install -y nodejs
-      ;;
+      $PKG install -y nodejs ;;
     arch)
-      pacman -Sy --noconfirm nodejs npm
-      ;;
+      pacman -Sy --noconfirm nodejs npm ;;
     alpine)
-      apk add --no-cache nodejs npm
-      ;;
+      apk add --no-cache nodejs npm ;;
     *)
-      die "Cannot auto-install Node.js on $DISTRO. Install Node.js $NODE_MIN+ manually."
-      ;;
+      die "Cannot auto-install Node.js on $DISTRO. Install Node.js $NODE_MIN+ manually." ;;
   esac
   ok "Node.js installed: $(node -v)"
 }
 
 install_go() {
+  if ! $IS_ROOT; then die "Installing Go requires root. Run: sudo $0 --deps"; fi
   info "Installing Go ${GO_MIN}..."
   case $DISTRO_FAMILY in
     debian)
       apt-get update -qq
       apt-get install -y golang-go 2>/dev/null || {
-        # If repo version is too old, use the official tarball
         local gotar="go${GO_MIN}.linux-amd64.tar.gz"
         curl -fsSL "https://go.dev/dl/${gotar}" -o "/tmp/${gotar}"
         rm -rf /usr/local/go
         tar -C /usr/local -xzf "/tmp/${gotar}"
         ln -sf /usr/local/go/bin/go /usr/local/bin/go
         rm "/tmp/${gotar}"
-      }
-      ;;
+      } ;;
     rhel)
-      $PKG install -y golang
-      ;;
+      $PKG install -y golang ;;
     arch)
-      pacman -Sy --noconfirm go
-      ;;
+      pacman -Sy --noconfirm go ;;
     alpine)
-      apk add --no-cache go
-      ;;
+      apk add --no-cache go ;;
     *)
-      die "Cannot auto-install Go on $DISTRO. Install Go $GO_MIN+ manually."
-      ;;
+      die "Cannot auto-install Go on $DISTRO. Install Go $GO_MIN+ manually." ;;
   esac
   ok "Go installed: $(go version)"
 }
@@ -210,6 +245,15 @@ do_deps() {
   if ! $need_node && ! $need_go; then
     ok "All dependencies satisfied"
     return 0
+  fi
+
+  if ! $IS_ROOT; then
+    warn "Installing dependencies requires root."
+    echo ""
+    $need_node && echo "  sudo $0 --deps   # or install Node.js $NODE_MIN+ manually"
+    $need_go   && echo "  sudo $0 --deps   # or install Go $GO_MIN+ manually"
+    echo ""
+    return 1
   fi
 
   local actions=""
@@ -240,10 +284,9 @@ do_download() {
   local arch
   arch=$(detect_arch)
 
-  # Check for required tools
   command -v curl &>/dev/null || die "curl is required. Install it first."
   command -v tar  &>/dev/null || die "tar is required. Install it first."
-  command -v node &>/dev/null || die "Node.js is required to run the backend. Run: sudo $0 --deps"
+  command -v node &>/dev/null || die "Node.js is required. Run: $0 --deps"
 
   info "Fetching latest release from GitHub..."
   local tag
@@ -260,7 +303,7 @@ do_download() {
   tmpdir=$(mktemp -d)
   trap "rm -rf '$tmpdir'" EXIT
 
-  curl -fsSL "$url" -o "${tmpdir}/${tarball}" || die "Download failed. Does the release exist?"
+  curl -fsSL "$url" -o "${tmpdir}/${tarball}" || die "Download failed."
   info "Extracting to ${INSTALL_DIR}..."
   mkdir -p "$INSTALL_DIR"
   tar xzf "${tmpdir}/${tarball}" -C "$INSTALL_DIR"
@@ -271,10 +314,9 @@ do_download() {
 
 # ── Build mode ──────────────────────────────────────────────────────────────
 do_build() {
-  check_node || die "Node.js ${NODE_MIN}+ required. Run: sudo $0 --deps"
-  check_go   || die "Go ${GO_MIN}+ required. Run: sudo $0 --deps"
+  check_node || die "Node.js ${NODE_MIN}+ required. Run: $0 --deps"
+  check_go   || die "Go ${GO_MIN}+ required. Run: $0 --deps"
 
-  # Detect repo root — either CWD or need to clone
   local repo_dir=""
   if [[ -f "package.json" ]] && grep -q '"opnet-permafrost"' package.json 2>/dev/null; then
     repo_dir="$(pwd)"
@@ -306,7 +348,6 @@ do_build() {
   cp "$repo_dir/relay/relay" "$INSTALL_DIR/relay"
   chmod +x "$INSTALL_DIR/relay"
 
-  # Write version from git tag or package.json
   local version
   version=$(cd "$repo_dir" && git describe --tags --always 2>/dev/null || echo "source")
   echo "$version" > "${INSTALL_DIR}/version.txt"
@@ -317,7 +358,7 @@ do_build() {
 # ── Service setup ───────────────────────────────────────────────────────────
 setup_services() {
   # Check port availability
-  if command -v ss &>/dev/null && ss -tlnp | grep -q ":${BACKEND_PORT} "; then
+  if command -v ss &>/dev/null && ss -tlnp 2>/dev/null | grep -q ":${BACKEND_PORT} "; then
     warn "Port ${BACKEND_PORT} is already in use"
     if ! $YES; then
       echo -en "${YELLOW}?${NC} Choose a different port [${BACKEND_PORT}]: "
@@ -327,27 +368,25 @@ setup_services() {
   fi
 
   local relay_port=$((BACKEND_PORT + 1))
-
-  # Create system user
-  if ! id "$SERVICE_USER" &>/dev/null; then
-    useradd --system --home-dir "$DATA_DIR" --shell /usr/sbin/nologin \
-            --create-home "$SERVICE_USER" 2>/dev/null || true
-    ok "Created system user: ${SERVICE_USER}"
-  else
-    ok "System user ${SERVICE_USER} already exists"
-  fi
-
-  # Data directory
-  mkdir -p "$DATA_DIR"
-  chown "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR"
-  ok "Data directory: ${DATA_DIR}"
-
-  # Find node binary path
   local node_bin
   node_bin=$(command -v node)
 
-  # Relay service
-  cat > /etc/systemd/system/permafrost-relay.service <<EOF
+  # Data directory
+  mkdir -p "$DATA_DIR"
+
+  if $IS_ROOT; then
+    # ── System-wide setup ──
+
+    # Create system user
+    if ! id "$SERVICE_USER" &>/dev/null; then
+      useradd --system --home-dir "$DATA_DIR" --shell /usr/sbin/nologin \
+              --create-home "$SERVICE_USER" 2>/dev/null || true
+      ok "Created system user: ${SERVICE_USER}"
+    fi
+    chown "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR"
+
+    # System-level systemd services
+    cat > /etc/systemd/system/permafrost-relay.service <<EOF
 [Unit]
 Description=PERMAFROST Relay
 After=network.target
@@ -363,8 +402,7 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-  # Backend service
-  cat > /etc/systemd/system/permafrost.service <<EOF
+    cat > /etc/systemd/system/permafrost.service <<EOF
 [Unit]
 Description=PERMAFROST Vault Backend
 After=network.target permafrost-relay.service
@@ -386,10 +424,71 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-  systemctl daemon-reload
-  systemctl enable --now permafrost-relay permafrost
+    systemctl daemon-reload
+    systemctl enable --now permafrost-relay permafrost
+    ok "System services started"
 
-  ok "Services started: permafrost-relay, permafrost"
+  else
+    # ── User-level setup ──
+
+    local user_service_dir="${HOME}/.config/systemd/user"
+    if command -v systemctl &>/dev/null && systemctl --user status &>/dev/null 2>&1; then
+      mkdir -p "$user_service_dir"
+
+      cat > "${user_service_dir}/permafrost-relay.service" <<EOF
+[Unit]
+Description=PERMAFROST Relay
+
+[Service]
+Type=simple
+ExecStart=${INSTALL_DIR}/relay -addr :${relay_port}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+
+      cat > "${user_service_dir}/permafrost.service" <<EOF
+[Unit]
+Description=PERMAFROST Vault Backend
+After=permafrost-relay.service
+Requires=permafrost-relay.service
+
+[Service]
+Type=simple
+WorkingDirectory=${INSTALL_DIR}
+Environment=NODE_ENV=production
+Environment=PORT=${BACKEND_PORT}
+Environment=RELAY_PORT=${relay_port}
+Environment=DATA_DIR=${DATA_DIR}
+ExecStart=${node_bin} backend/server.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+
+      systemctl --user daemon-reload
+      systemctl --user enable --now permafrost-relay permafrost
+      ok "User services started"
+
+      # Linger so services survive logout
+      if ! loginctl show-user "$(whoami)" 2>/dev/null | grep -q "Linger=yes"; then
+        add_root_cmd "loginctl enable-linger $(whoami)"
+        warn "Services will stop on logout. Run the root command below to enable linger."
+      fi
+    else
+      warn "User-level systemd not available."
+      echo ""
+      echo "  Start manually:"
+      echo "    ${INSTALL_DIR}/relay -addr :${relay_port} &"
+      echo "    PORT=${BACKEND_PORT} RELAY_PORT=${relay_port} DATA_DIR=${DATA_DIR} node ${INSTALL_DIR}/backend/server.js"
+      echo ""
+    fi
+  fi
+
   info "Backend listening on http://localhost:${BACKEND_PORT}"
 
   # Health check
@@ -397,21 +496,21 @@ EOF
   while [[ $retries -gt 0 ]]; do
     if curl -sf "http://localhost:${BACKEND_PORT}/api/status" &>/dev/null; then
       ok "Health check passed"
-      return 0
+      break
     fi
     retries=$((retries - 1))
     sleep 2
   done
-  warn "Health check failed — service may still be starting"
+  [[ $retries -eq 0 ]] && warn "Health check failed — service may still be starting"
 
-  # Write hosting seed so the backend pre-fills hosting config on first init
+  # Write hosting seed
   if [[ -n "$DOMAIN" ]]; then
     local ssl=true
     [[ "$BACKEND_PORT" == "80" ]] && ssl=false
     cat > "${DATA_DIR}/hosting-seed.json" <<SEED
 {"domain":"${DOMAIN}","port":443,"httpsEnabled":${ssl}}
 SEED
-    chown "$SERVICE_USER:$SERVICE_USER" "${DATA_DIR}/hosting-seed.json"
+    $IS_ROOT && chown "$SERVICE_USER:$SERVICE_USER" "${DATA_DIR}/hosting-seed.json"
     ok "Hosting config seeded: ${DOMAIN}"
   fi
 }
@@ -421,23 +520,42 @@ configure_webserver() {
   echo ""
   info "Detecting web server..."
 
+  local server_name="${DOMAIN:-localhost}"
+
   # ── Nginx ──
-  if command -v nginx &>/dev/null; then
+  if command -v nginx &>/dev/null || pgrep -x nginx &>/dev/null; then
     ok "Nginx detected"
 
+    # Determine config path
     local nginx_conf=""
     if [[ -d /etc/nginx/sites-available ]]; then
       nginx_conf="/etc/nginx/sites-available/permafrost"
     elif [[ -d /etc/nginx/conf.d ]]; then
       nginx_conf="/etc/nginx/conf.d/permafrost.conf"
-    else
-      warn "Nginx config directory not found, skipping"
+    fi
+
+    if [[ -z "$nginx_conf" ]]; then
+      warn "Could not find nginx config directory (/etc/nginx/sites-available or /etc/nginx/conf.d)"
+      echo ""
+      echo "  Manually add this server block to your nginx config:"
+      echo ""
+      echo "  server {"
+      echo "      listen 80;"
+      echo "      server_name ${server_name};"
+      echo "      location / {"
+      echo "          proxy_pass http://127.0.0.1:${BACKEND_PORT};"
+      echo "          proxy_http_version 1.1;"
+      echo "          proxy_set_header Upgrade \$http_upgrade;"
+      echo "          proxy_set_header Connection \"upgrade\";"
+      echo "          proxy_set_header Host \$host;"
+      echo "          proxy_read_timeout 3600s;"
+      echo "      }"
+      echo "  }"
+      echo ""
       return 0
     fi
 
-    local server_name="${DOMAIN:-localhost}"
-    cat > "$nginx_conf" <<NGINX
-server {
+    local nginx_config="server {
     listen 80;
     server_name ${server_name};
 
@@ -445,64 +563,79 @@ server {
         proxy_pass http://127.0.0.1:${BACKEND_PORT};
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
+        proxy_set_header Connection \"upgrade\";
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_read_timeout 3600s;
     }
-}
-NGINX
-    ok "Wrote ${nginx_conf}"
+}"
 
-    # Symlink if using sites-available/sites-enabled pattern
-    if [[ -d /etc/nginx/sites-enabled ]] && [[ "$nginx_conf" == */sites-available/* ]]; then
-      ln -sf "$nginx_conf" /etc/nginx/sites-enabled/permafrost
+    if $IS_ROOT; then
+      echo "$nginx_config" > "$nginx_conf"
+      ok "Wrote ${nginx_conf}"
 
-      # Remove default site if it would conflict
-      if [[ -L /etc/nginx/sites-enabled/default ]]; then
-        rm /etc/nginx/sites-enabled/default
-        info "Removed default nginx site (was conflicting on port 80)"
+      if [[ -d /etc/nginx/sites-enabled ]] && [[ "$nginx_conf" == */sites-available/* ]]; then
+        ln -sf "$nginx_conf" /etc/nginx/sites-enabled/permafrost
       fi
-    fi
 
-    if nginx -t &>/dev/null; then
-      systemctl reload nginx
-      ok "Nginx reloaded — PERMAFROST available on http://localhost"
+      if nginx -t &>/dev/null 2>&1; then
+        systemctl reload nginx 2>/dev/null && ok "Nginx reloaded" || warn "Failed to reload nginx"
+      else
+        warn "Nginx config test failed. Run: sudo nginx -t"
+      fi
     else
-      warn "Nginx config test failed. Check: nginx -t"
+      add_root_cmd "bash -c 'cat > ${nginx_conf} << '\\''CONF'\\''
+${nginx_config}
+CONF'"
+      if [[ -d /etc/nginx/sites-enabled ]] && [[ "$nginx_conf" == */sites-available/* ]]; then
+        add_root_cmd "ln -sf ${nginx_conf} /etc/nginx/sites-enabled/permafrost"
+      fi
+      add_root_cmd "nginx -t && systemctl reload nginx"
+      info "Nginx config prepared (requires root to write)"
     fi
     return 0
   fi
 
   # ── Apache ──
-  local apache_cmd=""
-  local apache_svc=""
-  if command -v apachectl &>/dev/null; then
-    apache_cmd="apachectl"
-    apache_svc="apache2"
-  elif command -v httpd &>/dev/null; then
-    apache_cmd="httpd"
-    apache_svc="httpd"
+  local apache_cmd="" apache_svc=""
+  if command -v apachectl &>/dev/null || pgrep -x apache2 &>/dev/null; then
+    apache_cmd="apachectl"; apache_svc="apache2"
+  elif command -v httpd &>/dev/null || pgrep -x httpd &>/dev/null; then
+    apache_cmd="httpd"; apache_svc="httpd"
   fi
 
   if [[ -n "$apache_cmd" ]]; then
-    ok "Apache detected (${apache_cmd})"
+    ok "Apache detected (${apache_svc})"
 
     local apache_conf=""
     if [[ -d /etc/apache2/sites-available ]]; then
       apache_conf="/etc/apache2/sites-available/permafrost.conf"
     elif [[ -d /etc/httpd/conf.d ]]; then
       apache_conf="/etc/httpd/conf.d/permafrost.conf"
-    else
-      warn "Apache config directory not found, skipping"
+    fi
+
+    if [[ -z "$apache_conf" ]]; then
+      warn "Could not find Apache config directory"
+      echo ""
+      echo "  Manually add this VirtualHost to your Apache config:"
+      echo ""
+      echo "  <VirtualHost *:80>"
+      echo "      ServerName ${server_name}"
+      echo "      ProxyPreserveHost On"
+      echo "      ProxyPass / http://127.0.0.1:${BACKEND_PORT}/"
+      echo "      ProxyPassReverse / http://127.0.0.1:${BACKEND_PORT}/"
+      echo "      RewriteEngine On"
+      echo "      RewriteCond %{HTTP:Upgrade} =websocket [NC]"
+      echo "      RewriteRule /(.*) ws://127.0.0.1:${BACKEND_PORT}/\$1 [P,L]"
+      echo "  </VirtualHost>"
+      echo ""
       return 0
     fi
 
-    cat > "$apache_conf" <<APACHE
-<VirtualHost *:80>
-    ServerName ${DOMAIN:-localhost}
+    local apache_config="<VirtualHost *:80>
+    ServerName ${server_name}
     ProxyPreserveHost On
     ProxyPass / http://127.0.0.1:${BACKEND_PORT}/
     ProxyPassReverse / http://127.0.0.1:${BACKEND_PORT}/
@@ -510,21 +643,28 @@ NGINX
     RewriteEngine On
     RewriteCond %{HTTP:Upgrade} =websocket [NC]
     RewriteRule /(.*) ws://127.0.0.1:${BACKEND_PORT}/\$1 [P,L]
-</VirtualHost>
-APACHE
-    ok "Wrote ${apache_conf}"
+</VirtualHost>"
 
-    # Enable required modules (Debian/Ubuntu style)
-    if command -v a2enmod &>/dev/null; then
-      a2enmod proxy proxy_http proxy_wstunnel rewrite &>/dev/null
-      a2ensite permafrost &>/dev/null
-      # Disable default site if it conflicts
-      a2dissite 000-default &>/dev/null || true
-      ok "Enabled Apache modules and site"
+    if $IS_ROOT; then
+      echo "$apache_config" > "$apache_conf"
+      ok "Wrote ${apache_conf}"
+
+      if command -v a2enmod &>/dev/null; then
+        a2enmod proxy proxy_http proxy_wstunnel rewrite &>/dev/null 2>&1 || true
+        a2ensite permafrost &>/dev/null 2>&1 || true
+        ok "Enabled Apache modules and site"
+      fi
+
+      systemctl reload "$apache_svc" 2>/dev/null && ok "Apache reloaded" || warn "Failed to reload Apache"
+    else
+      add_root_cmd "bash -c 'echo \"${apache_config}\" > ${apache_conf}'"
+      if command -v a2enmod &>/dev/null; then
+        add_root_cmd "a2enmod proxy proxy_http proxy_wstunnel rewrite"
+        add_root_cmd "a2ensite permafrost"
+      fi
+      add_root_cmd "systemctl reload ${apache_svc}"
+      info "Apache config prepared (requires root to write)"
     fi
-
-    systemctl reload "$apache_svc" 2>/dev/null || true
-    ok "Apache reloaded — PERMAFROST available on http://localhost"
     return 0
   fi
 
@@ -534,11 +674,7 @@ APACHE
   echo ""
   echo "  PERMAFROST is running on http://localhost:${BACKEND_PORT}"
   echo ""
-  echo "  To expose on port 80/443, install nginx or apache and re-run this script,"
-  echo "  or use the Docker image which includes Caddy:"
-  echo ""
-  echo "    docker run -d -p 80:80 -v permafrost-data:/data ghcr.io/${REPO}:latest"
-  echo ""
+  echo "  To expose on port 80/443, install nginx or apache and re-run this script."
   echo "  Manual proxy config: forward to http://127.0.0.1:${BACKEND_PORT}"
   echo "  WebSocket path: /ws (requires upgrade headers)"
   echo ""
@@ -550,25 +686,22 @@ do_uninstall() {
   echo ""
 
   confirm "This will stop services and remove ${INSTALL_DIR}. Continue?" || {
-    info "Aborted."
-    exit 0
+    info "Aborted."; exit 0
   }
 
-  # Stop and disable services
-  if systemctl is-active --quiet permafrost 2>/dev/null; then
-    systemctl stop permafrost
-    ok "Stopped permafrost service"
+  # Stop services
+  if $IS_ROOT; then
+    systemctl stop permafrost permafrost-relay 2>/dev/null || true
+    systemctl disable permafrost permafrost-relay 2>/dev/null || true
+    rm -f /etc/systemd/system/permafrost.service /etc/systemd/system/permafrost-relay.service
+    systemctl daemon-reload
+  else
+    systemctl --user stop permafrost permafrost-relay 2>/dev/null || true
+    systemctl --user disable permafrost permafrost-relay 2>/dev/null || true
+    rm -f "${HOME}/.config/systemd/user/permafrost.service" "${HOME}/.config/systemd/user/permafrost-relay.service"
+    systemctl --user daemon-reload 2>/dev/null || true
   fi
-  if systemctl is-active --quiet permafrost-relay 2>/dev/null; then
-    systemctl stop permafrost-relay
-    ok "Stopped permafrost-relay service"
-  fi
-
-  systemctl disable permafrost permafrost-relay 2>/dev/null || true
-  rm -f /etc/systemd/system/permafrost.service
-  rm -f /etc/systemd/system/permafrost-relay.service
-  systemctl daemon-reload
-  ok "Removed systemd services"
+  ok "Removed services"
 
   # Remove install directory
   if [[ -d "$INSTALL_DIR" ]]; then
@@ -576,41 +709,26 @@ do_uninstall() {
     ok "Removed ${INSTALL_DIR}"
   fi
 
-  # Remove web server configs
-  if [[ -f /etc/nginx/sites-available/permafrost ]]; then
-    rm -f /etc/nginx/sites-enabled/permafrost
-    rm -f /etc/nginx/sites-available/permafrost
+  # Remove web server configs (root only)
+  if $IS_ROOT; then
+    for f in /etc/nginx/sites-available/permafrost /etc/nginx/sites-enabled/permafrost \
+             /etc/nginx/conf.d/permafrost.conf \
+             /etc/apache2/sites-available/permafrost.conf /etc/httpd/conf.d/permafrost.conf; do
+      [[ -f "$f" ]] && rm -f "$f" && ok "Removed $f"
+    done
     systemctl reload nginx 2>/dev/null || true
-    ok "Removed nginx config"
-  fi
-  if [[ -f /etc/nginx/conf.d/permafrost.conf ]]; then
-    rm -f /etc/nginx/conf.d/permafrost.conf
-    systemctl reload nginx 2>/dev/null || true
-    ok "Removed nginx config"
-  fi
-  if [[ -f /etc/apache2/sites-available/permafrost.conf ]]; then
-    a2dissite permafrost 2>/dev/null || true
-    rm -f /etc/apache2/sites-available/permafrost.conf
-    systemctl reload apache2 2>/dev/null || true
-    ok "Removed apache config"
-  fi
-  if [[ -f /etc/httpd/conf.d/permafrost.conf ]]; then
-    rm -f /etc/httpd/conf.d/permafrost.conf
-    systemctl reload httpd 2>/dev/null || true
-    ok "Removed apache config"
-  fi
-
-  # Remove system user
-  if id "$SERVICE_USER" &>/dev/null; then
-    userdel "$SERVICE_USER" 2>/dev/null || true
-    ok "Removed system user: ${SERVICE_USER}"
+    systemctl reload apache2 2>/dev/null || systemctl reload httpd 2>/dev/null || true
+    if id permafrost &>/dev/null; then
+      userdel permafrost 2>/dev/null || true
+      ok "Removed system user"
+    fi
   fi
 
   echo ""
   ok "PERMAFROST uninstalled"
   echo ""
   warn "Data directory preserved: ${DATA_DIR}"
-  echo "  To remove all data: sudo rm -rf ${DATA_DIR}"
+  echo "  To remove all data: rm -rf ${DATA_DIR}"
   echo ""
 }
 
@@ -628,6 +746,7 @@ main() {
       do_download
       setup_services
       configure_webserver
+      print_root_commands
       echo ""
       ok "Installation complete!"
       ;;
@@ -635,6 +754,7 @@ main() {
       do_build
       setup_services
       configure_webserver
+      print_root_commands
       echo ""
       ok "Installation complete!"
       ;;
