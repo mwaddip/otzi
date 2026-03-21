@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { initInstance, setAdminToken, setSessionRole } from '../lib/api';
+import { initInstance, setAdminToken, setSessionRole, restoreBackup } from '../lib/api';
 import type { NetworkName, StorageMode } from '../lib/vault-types';
 import { OtziWordmark } from '../App';
 
@@ -127,6 +127,36 @@ export function InstallWizard({ onComplete }: Props) {
           </div>
           <button className="btn btn-primary btn-full" onClick={() => setStep(2)}>
             Next
+          </button>
+
+          <div style={{ textAlign: 'center', fontSize: 13, color: 'var(--gray-light)', margin: '16px 0 8px' }}>
+            or
+          </div>
+
+          <button className="btn btn-secondary btn-full" onClick={() => {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.json';
+            input.onchange = async (e) => {
+              const file = (e.target as HTMLInputElement).files?.[0];
+              if (!file) return;
+              setLoading(true);
+              setError('');
+              try {
+                const text = await file.text();
+                const backup = JSON.parse(text);
+                if (!backup.config) throw new Error('Invalid backup file');
+                await restoreBackup(backup);
+                onComplete();
+              } catch (err) {
+                setError((err as Error).message);
+              } finally {
+                setLoading(false);
+              }
+            };
+            input.click();
+          }} disabled={loading}>
+            {loading ? <span className="spinner" /> : 'Restore from Backup'}
           </button>
         </div>
       )}

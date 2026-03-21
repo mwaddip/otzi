@@ -219,8 +219,18 @@ export function configRoutes(store: ConfigStore, userStore: UserStore, requireAd
     }
   });
 
-  /** POST /api/restore — restore from backup */
-  r.post('/restore', requireAdmin, (req: Request, res: Response) => {
+  /** POST /api/restore — restore from backup (works on fresh OR initialized instances) */
+  r.post('/restore', (req: Request, res: Response) => {
+    // Allow without auth only on fresh instances (restore from scratch)
+    const isFresh = !store.isInitialized();
+    if (!isFresh) {
+      // On initialized instances, require admin auth
+      const auth = req.headers.authorization;
+      if (!auth?.startsWith('Bearer ')) {
+        res.status(401).json({ error: 'Admin authentication required' });
+        return;
+      }
+    }
     const { backup } = req.body as { backup?: { config?: unknown; users?: { users?: unknown[]; invites?: unknown[]; settings?: { everybodyCanRead?: boolean } } } };
     if (!backup?.config) {
       res.status(400).json({ error: 'Invalid backup format' });
@@ -229,6 +239,10 @@ export function configRoutes(store: ConfigStore, userStore: UserStore, requireAd
     try {
       // Restore config
       const config = backup.config as import('../lib/types.js').VaultConfig;
+      if (isFresh) {
+        // Fresh instance — init with the backup's storage mode, then overwrite with full config
+        store.init(config.network, config.storageMode);
+      }
       store.update(config);
 
       // Restore users if present
