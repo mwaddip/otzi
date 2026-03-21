@@ -100,7 +100,7 @@ export function OperationCard({ operation, config, reads, onExecute, disabled }:
           <div className="form-row" key={p.name}>
             <label>
               {p.label || p.name}
-              {p.scale && <span style={{ fontSize: 11, color: 'var(--white-dim)', marginLeft: 6 }}>x{p.scale}</span>}
+              {p.scale && <span style={{ fontSize: 11, color: 'var(--white-dim)', marginLeft: 6 }} title="Your input is multiplied by this value before sending. For 8-decimal tokens, enter human-readable amounts (e.g. 100 instead of 10000000000).">x{p.scale}</span>}
               <input
                 value={values[p.name] || ''}
                 onChange={e => setValues(prev => ({ ...prev, [p.name]: e.target.value }))}

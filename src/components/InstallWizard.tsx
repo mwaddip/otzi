@@ -180,7 +180,7 @@ export function InstallWizard({ onComplete }: Props) {
               ['password', 'Admin Password', 'Protect settings with a password. Simple setup.'],
               ['wallet', 'OPWallet (ML-DSA)', 'Authenticate with OPWallet signatures. Role-based access for multiple users.'],
             ] as const).map(([value, label, desc]) => (
-              <label key={value} style={{
+              <label key={value} title={value === 'wallet' ? 'ML-DSA is a post-quantum digital signature algorithm. OPWallet signs a cryptographic challenge to prove your identity.' : undefined} style={{
                 display: 'flex', alignItems: 'flex-start', gap: 12, padding: 12,
                 background: authMode === value ? 'var(--accent-dim)' : 'var(--bg-raised)',
                 borderRadius: 'var(--radius)', cursor: 'pointer',
@@ -247,6 +247,7 @@ export function InstallWizard({ onComplete }: Props) {
             ] as const).map(([value, label, desc]) => (
               <label
                 key={value}
+                title={value === 'encrypted-portable' ? 'Config file is downloaded to your machine. Nothing is stored on the server. Upload and enter password each session.' : undefined}
                 style={{
                   display: 'flex', alignItems: 'flex-start', gap: 12, padding: 12,
                   background: storageMode === value ? 'var(--accent-dim)' : 'var(--bg-raised)',

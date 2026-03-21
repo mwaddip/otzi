@@ -79,7 +79,7 @@ export function ShareImport({ onShareLoaded }: ShareImportProps) {
       </p>
 
       <div className="step-field">
-        <label>Share File (.json)</label>
+        <label title="Your encrypted DKG share file (.json) downloaded after the key generation ceremony">Share File (.json)</label>
         <input type="file" accept=".json" onChange={handleFile} />
         {fileName && <span className="threshold-filename">{fileName}</span>}
       </div>
@@ -468,7 +468,7 @@ export function ThresholdSign({
         combineAttemptRef.current++;
         if (relayClient && combineAttemptRef.current < MAX_COMBINE_ATTEMPTS) {
           // Auto-retry: reset round state and restart from round 1
-          setBlobError(`Norm check failed (attempt ${combineAttemptRef.current}/${MAX_COMBINE_ATTEMPTS}), retrying...`);
+          setBlobError(`Norm check failed (attempt ${combineAttemptRef.current}/${MAX_COMBINE_ATTEMPTS}), retrying with fresh randomness...`);
           const s = sessionRef.current;
           s.round1State?.destroy();
           s.round2State?.destroy();
@@ -716,7 +716,7 @@ export function ThresholdSign({
           {collectedCount < needed ? ' — waiting for peers...' : ' — advancing...'}
         </div>
         {blobError && (
-          <div className="step-status error">{blobError}</div>
+          <div className="step-status error" title="This is normal — the ML-DSA threshold protocol is probabilistic. The system automatically retries with fresh randomness.">{blobError}</div>
         )}
       </div>
     );

@@ -134,7 +134,7 @@ export function WalletAuth({ onAuthenticated }: Props) {
           <p style={{ textAlign: 'center', marginBottom: 16 }}>Connect your OPWallet to authenticate</p>
 
           <div className="form-row">
-            <label>
+            <label title="Optional — paste a 6-character code to join a DKG or signing ceremony without wallet authentication">
               Session Code
               <input
                 autoFocus
@@ -182,7 +182,7 @@ export function WalletAuth({ onAuthenticated }: Props) {
             Your wallet is not registered. Enter an invite code to gain access.
           </p>
           <div className="form-row">
-            <label>
+            <label title="Ask the instance administrator for an invite code to register your wallet">
               Invite Code
               <input
                 autoFocus

@@ -73,12 +73,12 @@ export function WalletSetup({ onComplete }: Props) {
               checked={dontShow}
               onChange={e => setDontShow(e.target.checked)}
             />
-            <label htmlFor="dontShow" style={{ fontSize: 13, color: 'var(--white-dim)', cursor: 'pointer' }}>
+            <label htmlFor="dontShow" style={{ fontSize: 13, color: 'var(--white-dim)', cursor: 'pointer' }} title="Hide this setup step on future logins. Wallet can still be configured in Settings.">
               Don't show this again
             </label>
           </div>
 
-          <button className="btn btn-secondary btn-full" onClick={handleSkip} disabled={loading}>
+          <button className="btn btn-secondary btn-full" onClick={handleSkip} disabled={loading} title="You can configure a wallet later in Settings. Without a wallet, signatures are display-only and cannot be broadcast.">
             Skip for now
           </button>
         </div>
@@ -93,7 +93,7 @@ export function WalletSetup({ onComplete }: Props) {
           </div>
           {p2tr && (
             <>
-              <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>P2TR Address</h3>
+              <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }} title="Pay-to-Taproot Bitcoin address used to fund OPNet transaction fees">P2TR Address</h3>
               <div className="pubkey-display">{p2tr}</div>
               <WalletFunder p2tr={p2tr} />
             </>

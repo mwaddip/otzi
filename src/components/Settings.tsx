@@ -169,12 +169,12 @@ export function Settings({ onBack, onSend }: Props) {
               <p>{config.permafrost.threshold}-of-{config.permafrost.parties} threshold · Security level {config.permafrost.level}</p>
               {opnetIdentity && (
                 <div style={{ marginTop: 8 }}>
-                  <strong style={{ fontSize: 13, color: 'var(--gray-light)' }}>OPNet Identity</strong>
+                  <strong style={{ fontSize: 13, color: 'var(--gray-light)' }} title="SHA-256 hash of the combined ML-DSA public key — uniquely identifies this vault on the OPNet network">OPNet Identity</strong>
                   <div className="pubkey-display" style={{ fontSize: 12, marginTop: 4 }}>{opnetIdentity}</div>
                 </div>
               )}
               <div style={{ marginTop: 8 }}>
-                <strong style={{ fontSize: 13, color: 'var(--gray-light)' }}>Combined ML-DSA Public Key</strong>
+                <strong style={{ fontSize: 13, color: 'var(--gray-light)' }} title="Aggregated threshold public key from all DKG parties — used to verify signatures on-chain">Combined ML-DSA Public Key</strong>
                 <div className="pubkey-display" style={{ fontSize: 11, marginTop: 4 }}>
                   {config.permafrost.combinedPubKey.slice(0, 64)}...
                 </div>

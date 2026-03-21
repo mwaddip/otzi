@@ -131,7 +131,7 @@ export function ManifestImport({ disabled }: Props) {
             </div>
           </div>
 
-          <h3 style={{ fontSize: 14, marginBottom: 8 }}>Contract Addresses</h3>
+          <h3 style={{ fontSize: 14, marginBottom: 8 }} title="Contract addresses are configured per deployment — the manifest only defines contract types and operations">Contract Addresses</h3>
           {Object.entries(config.manifest.contracts).map(([key, contract]) => (
             <div className="form-row" key={key}>
               <label>
