@@ -184,8 +184,13 @@ export function App() {
     content = <UnlockScreen onUnlocked={handleSetupComplete} />;
   } else if (view === 'walletAuth') {
     content = <WalletAuth onAuthenticated={(_role, _addr, sessionCode) => {
-      if (sessionCode) setPendingSessionCode(sessionCode);
-      checkStatus();
+      if (sessionCode) {
+        // Session code = temporary access — go straight to signing, skip auth
+        setPendingSessionCode(sessionCode);
+        setView('signing');
+      } else {
+        checkStatus();
+      }
     }} />;
   } else if (view === 'wallet') {
     content = <WalletSetup onComplete={handleSetupComplete} />;
