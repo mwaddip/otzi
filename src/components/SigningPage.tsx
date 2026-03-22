@@ -525,6 +525,7 @@ export function SigningPage({ onSettings, prefill, onPrefillConsumed, initialSes
               relayClient={relayClient}
               relayReady={relayReady}
               relayPartyId={relayClient.partyId}
+              isLeader={isInitiator}
             />
           )}
         </>

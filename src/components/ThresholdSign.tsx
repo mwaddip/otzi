@@ -294,6 +294,8 @@ interface ThresholdSignProps {
   relayReady?: boolean;
   /** Party ID assigned by the relay server (optional — used by relay modes). */
   relayPartyId?: number;
+  /** Whether this party is the session leader (created the session, drives round advancement). */
+  isLeader?: boolean;
 }
 
 export function ThresholdSign({
@@ -307,6 +309,7 @@ export function ThresholdSign({
   relayClient,
   relayReady: relayReadyProp,
   relayPartyId: _relayPartyId,
+  isLeader,
 }: ThresholdSignProps) {
   void _relayPartyId; // passed by caller but unused — signing uses share.partyId
   const [phase, setPhase] = useState<SigningPhase>('idle');
@@ -349,7 +352,7 @@ export function ThresholdSign({
   // Peers derive what's needed from each other's state and re-send on request.
   // Replaces SIGNING_READY, BARRIER, and NEED_BLOB with one mechanism.
   // ---------------------------------------------------------------------------
-  const [peerStates, setPeerStates] = useState<Map<number, { round: number; blobsSent: number[] }>>(new Map());
+  const peerStatesRef = useRef<Map<number, { round: number; blobsSent: number[] }>>(new Map());
   const blobsSentRef = useRef<Set<number>>(new Set());
 
   // Start signing (shared between manual and relay modes)
@@ -361,7 +364,7 @@ export function ThresholdSign({
     setSession({ ...sess });
     setPhase('round1');
     blobsSentRef.current = new Set();
-    setPeerStates(new Map());
+    peerStatesRef.current = new Map();
 
     // Relay mode: immediately broadcast round 1 blob
     if (relayClient && sess.myRound1Blob) {
@@ -452,9 +455,10 @@ export function ThresholdSign({
         onSignatureReady(sig);
       } else {
         combineAttemptRef.current++;
-        if (relayClient && combineAttemptRef.current < MAX_COMBINE_ATTEMPTS) {
-          // Auto-retry: reset round state and restart from round 1
-          setBlobError(`Norm check failed (attempt ${combineAttemptRef.current}/${MAX_COMBINE_ATTEMPTS}), retrying with fresh randomness...`);
+        if (relayClient && isLeader && combineAttemptRef.current < MAX_COMBINE_ATTEMPTS) {
+          // Leader auto-retry: reset and restart from round 1
+          // Joiners will follow when they see our STATE go back to round 1
+          setBlobError(`Norm check failed (attempt ${combineAttemptRef.current}/${MAX_COMBINE_ATTEMPTS}), retrying...`);
           const s = sessionRef.current;
           s.round1State?.destroy();
           s.round2State?.destroy();
@@ -470,15 +474,17 @@ export function ThresholdSign({
           s.myRound2Blob = null;
           s.myRound3Blob = null;
           blobsSentRef.current = new Set();
-          setPeerStates(new Map());
+          peerStatesRef.current = new Map();
           setPhase('round1');
-          // Relay mode: restart from round 1
           round1(s);
           setSession({ ...s });
           if (s.myRound1Blob) {
             void broadcastBlob(s.myRound1Blob);
             blobsSentRef.current.add(1);
           }
+        } else if (!isLeader && relayClient) {
+          // Joiner: combine failed, wait for leader to restart
+          setBlobError('Waiting for leader to restart...');
         } else {
           setBlobError(`Signing failed after ${combineAttemptRef.current} attempts. Click Retry to start over.`);
           setPhase('failed');
@@ -502,7 +508,7 @@ export function ThresholdSign({
     setPhase('idle');
     setBlobError('');
     blobsSentRef.current = new Set();
-    setPeerStates(new Map());
+    peerStatesRef.current = new Map();
     relayInitRef.current = false; // allow relay re-init on retry
   }, []);
 
@@ -534,20 +540,50 @@ export function ThresholdSign({
   }, [relayClient, relayReadyProp, phase, share.threshold, startSigningWithIds]);
 
   // ---------------------------------------------------------------------------
-  // Relay: state-sync protocol
+  // Relay: leader-driven state-sync protocol
   //
-  // Each party broadcasts STATE:<partyId>:<round>:<blobsSent> every 500ms.
-  // Advance is reactive (useEffect on session/peerStates) + interval fallback.
-  // Peers re-send blobs when they see a peer is behind.
+  // The leader (session initiator) drives round advancement and combine.
+  // Joiners follow — they advance when they see the leader is ahead.
+  //
+  // STATE:<partyId>:<round>:<blobsSent>
+  // - Broadcast on every state change + every 500ms as fallback
+  // - On receiving peer STATE: re-send blobs they might need
+  // - Leader: advance when all blobs collected for current round
+  // - Joiner: advance when leader's round is ahead of theirs
+  // - Leader combine retry: resets to round 1, joiners follow when they
+  //   see leader back on round 1
   // ---------------------------------------------------------------------------
 
   const phaseToRound = (p: string) =>
     p === 'round1' ? 1 : p === 'round2' ? 2 : p === 'round3' ? 3 : p === 'complete' ? 4 : 0;
 
-  // Advance check — called reactively and from interval
+  // Broadcast own state immediately
+  const broadcastState = useCallback(() => {
+    if (!relayClient) return;
+    const roundNum = phaseToRound(phase);
+    if (roundNum === 0) return;
+    const sent = [...blobsSentRef.current].join(',');
+    void relayClient.broadcast(
+      new TextEncoder().encode(`STATE:${share.partyId}:${roundNum}:${sent}`)
+    );
+  }, [relayClient, phase, share.partyId]);
+
+  // Broadcast state on every phase/session change (reactive)
+  useEffect(() => {
+    broadcastState();
+  }, [broadcastState, session]);
+
+  // Broadcast state periodically (fallback for dropped messages)
+  useEffect(() => {
+    if (!relayClient) return;
+    const interval = setInterval(broadcastState, 500);
+    return () => clearInterval(interval);
+  }, [relayClient, broadcastState]);
+
+  // Leader: reactive advance when all blobs are collected
   const advancingRef = useRef(false);
-  const tryAdvance = useCallback(() => {
-    if (!relayClient || !sessionRef.current || advancingRef.current) return;
+  useEffect(() => {
+    if (!isLeader || !relayClient || !sessionRef.current || advancingRef.current) return;
     const roundNum = phaseToRound(phase);
     if (roundNum < 1 || roundNum > 3) return;
 
@@ -560,26 +596,12 @@ export function ThresholdSign({
 
     if (collected < needed) return;
 
-    // All blobs collected — check if all peers are on this round or ahead
-    for (const pid of s.activePartyIds) {
-      if (pid === share.partyId) continue;
-      const ps = peerStates.get(pid);
-      if (!ps || ps.round < roundNum) return;
-    }
-
-    // Advance
     advancingRef.current = true;
     if (roundNum === 1) advanceToRound2();
     else if (roundNum === 2) advanceToRound3();
     else if (roundNum === 3) doCombine();
     advancingRef.current = false;
-  }, [relayClient, phase, share.partyId, peerStates, advanceToRound2, advanceToRound3, doCombine]);
-
-  // Reactive advance — triggers immediately when blobs arrive or peer states update
-  useEffect(() => {
-    if (!relayClient) return;
-    tryAdvance();
-  }, [relayClient, session, peerStates, tryAdvance]);
+  }, [isLeader, relayClient, phase, session, advanceToRound2, advanceToRound3, doCombine]);
 
   // Relay: subscribe to incoming messages
   useEffect(() => {
@@ -592,33 +614,62 @@ export function ThresholdSign({
       if (stateMatch) {
         const pid = parseInt(stateMatch[1]!, 10);
         const peerRound = parseInt(stateMatch[2]!, 10);
-        const sent = stateMatch[3] ? stateMatch[3].split(',').map(Number) : [];
 
-        setPeerStates(prev => {
-          const next = new Map(prev);
-          next.set(pid, { round: peerRound, blobsSent: sent });
-          return next;
-        });
+        peerStatesRef.current.set(pid, { round: peerRound, blobsSent: stateMatch[3] ? stateMatch[3].split(',').map(Number) : [] });
 
-        // Re-send blobs the peer might need
-        if (sessionRef.current && relayClient) {
-          const s = sessionRef.current;
-          const myRound = phaseToRound(phase);
-          // Send blobs for the peer's current round (they might have missed ours)
-          if (peerRound >= 1 && peerRound <= 3) {
-            const blob = peerRound === 1 ? s.myRound1Blob : peerRound === 2 ? s.myRound2Blob : s.myRound3Blob;
-            if (blob && blobsSentRef.current.has(peerRound)) {
-              void relayClient.broadcast(new TextEncoder().encode(blob));
-            }
-          }
-          // If peer went back to round 1 (combine retry) and we're ahead, reset too
-          if (peerRound === 1 && myRound > 1 && myRound !== 4) {
-            // Peer restarted — we should see their new round 1 blob soon
-            // Don't reset ourselves; the new blob will have a different msgPrefix
-            // and addBlob will reject our stale blobs. The combine retry in
-            // doCombine handles our own reset.
+        if (!sessionRef.current || !relayClient) return;
+        const s = sessionRef.current;
+        const myRound = phaseToRound(phase);
+
+        // Re-send blobs the peer might need for their current round
+        if (peerRound >= 1 && peerRound <= 3) {
+          const blob = peerRound === 1 ? s.myRound1Blob : peerRound === 2 ? s.myRound2Blob : s.myRound3Blob;
+          if (blob && blobsSentRef.current.has(peerRound)) {
+            void relayClient.broadcast(new TextEncoder().encode(blob));
           }
         }
+
+        // Joiner: follow the leader
+        if (!isLeader && peerRound > myRound && myRound >= 1 && myRound <= 3) {
+          // Leader is ahead — advance if we have all blobs for our current round
+          const needed = s.activePartyIds.length;
+          const collected =
+            myRound === 1 ? s.collectedRound1Hashes.size :
+            myRound === 2 ? s.collectedRound2Commitments.size :
+            s.collectedRound3Responses.size;
+          if (collected >= needed) {
+            if (myRound === 1) advanceToRound2();
+            else if (myRound === 2) advanceToRound3();
+            else if (myRound === 3) doCombine();
+          }
+        }
+
+        // Joiner: leader went back to round 1 (combine retry) — reset too
+        if (!isLeader && peerRound === 1 && myRound > 1) {
+          const s2 = sessionRef.current;
+          s2.round1State?.destroy();
+          s2.round2State?.destroy();
+          s2.round1State = null;
+          s2.round2State = null;
+          s2.myRound1Hash = null;
+          s2.myRound2Commitment = null;
+          s2.myRound3Response = null;
+          s2.collectedRound1Hashes.clear();
+          s2.collectedRound2Commitments.clear();
+          s2.collectedRound3Responses.clear();
+          s2.myRound1Blob = null;
+          s2.myRound2Blob = null;
+          s2.myRound3Blob = null;
+          blobsSentRef.current = new Set();
+          setPhase('round1');
+          round1(s2);
+          setSession({ ...s2 });
+          if (s2.myRound1Blob) {
+            void broadcastBlob(s2.myRound1Blob);
+            blobsSentRef.current.add(1);
+          }
+        }
+
         return;
       }
 
@@ -631,24 +682,7 @@ export function ThresholdSign({
     };
     relayClient.on('message', handler);
     return () => { relayClient.off('message', handler); };
-  }, [relayClient, phase]);
-
-  // Relay: broadcast STATE periodically (fallback for missed messages)
-  useEffect(() => {
-    if (!relayClient || !sessionRef.current) return;
-    const roundNum = phaseToRound(phase);
-    if (roundNum === 0) return;
-
-    const interval = setInterval(() => {
-      if (!relayClient) return;
-      const sent = [...blobsSentRef.current].join(',');
-      void relayClient.broadcast(
-        new TextEncoder().encode(`STATE:${share.partyId}:${roundNum}:${sent}`)
-      );
-    }, 500);
-
-    return () => clearInterval(interval);
-  }, [relayClient, phase, share.partyId]);
+  }, [relayClient, phase, isLeader, advanceToRound2, advanceToRound3, doCombine, broadcastBlob]);
 
   const needed = share.threshold;
 
