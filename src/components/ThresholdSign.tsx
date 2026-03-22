@@ -584,22 +584,23 @@ export function ThresholdSign({
     const interval = setInterval(() => {
       if (!sessionRef.current || !relayClient) return;
       const s = sessionRef.current;
+      const needed = s.activePartyIds.length;
       const collected =
         roundNum === 1 ? s.collectedRound1Hashes :
         roundNum === 2 ? s.collectedRound2Commitments :
         s.collectedRound3Responses;
 
-      // Ask for blobs we're missing
-      for (const pid of s.activePartyIds) {
-        if (pid === share.partyId) continue;
-        if (collected.has(pid)) continue;
+      const roundKey = `round${roundNum}`;
+      const barrierCount = barriers[roundKey]?.size ?? 0;
+
+      // Ask for blobs or barriers we're missing
+      if (collected.size < needed || barrierCount < needed) {
         void relayClient.broadcast(new TextEncoder().encode(`NEED_BLOB:${roundNum}:${share.partyId}`));
-        break; // one request per interval
       }
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [relayClient, phase, roundBlobSent, share.partyId]);
+  }, [relayClient, phase, roundBlobSent, share.partyId, barriers]);
 
   // ---------------------------------------------------------------------------
   // Relay: subscribe to incoming messages and feed into addBlob
@@ -628,6 +629,15 @@ export function ThresholdSign({
             needRound === 3 ? sessionRef.current.myRound3Blob : null;
           if (blob) {
             void relayClient.broadcast(new TextEncoder().encode(blob));
+          }
+          // Also re-send our barrier if we already sent one for this round
+          const roundKey = `round${needRound}`;
+          if (barrierSentRef.current[roundKey]) {
+            void relayClient.broadcast(new TextEncoder().encode(`BARRIER:${roundKey}:${share.partyId}`));
+          }
+          // Also re-send SIGNING_READY if already sent
+          if (signingReadySentRef.current) {
+            void relayClient.broadcast(new TextEncoder().encode(`SIGNING_READY:${share.partyId}`));
           }
         }
         return;
