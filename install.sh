@@ -548,7 +548,8 @@ configure_webserver() {
       echo "          proxy_set_header Upgrade \$http_upgrade;"
       echo "          proxy_set_header Connection \"upgrade\";"
       echo "          proxy_set_header Host \$host;"
-      echo "          proxy_read_timeout 3600s;"
+      echo "          proxy_read_timeout 3600s;
+        proxy_buffering off;"
       echo "      }"
       echo "  }"
       echo ""
@@ -569,6 +570,7 @@ configure_webserver() {
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_read_timeout 3600s;
+        proxy_buffering off;
     }
 }"
 

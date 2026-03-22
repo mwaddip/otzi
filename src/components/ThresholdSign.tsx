@@ -577,15 +577,13 @@ export function ThresholdSign({
   // ---------------------------------------------------------------------------
   useEffect(() => {
     if (!relayClient) return;
-    const handler = (from: number, payload: Uint8Array) => {
+    const handler = (_from: number, payload: Uint8Array) => {
       const text = new TextDecoder().decode(payload);
-      console.log(`[relay] msg from=${from} len=${text.length} preview=${text.slice(0, 40)}`);
 
       // Intercept SIGNING_READY messages (pre-signing barrier)
       const readyMatch = text.match(/^SIGNING_READY:(\d+)$/);
       if (readyMatch) {
         const pid = parseInt(readyMatch[1]!, 10);
-        console.log(`[relay] SIGNING_READY from party ${pid}`);
         setSigningReadyPeers(prev => new Set(prev).add(pid));
         return;
       }
@@ -595,7 +593,6 @@ export function ThresholdSign({
       if (m) {
         const barrierPhase = m[1]!;
         const pid = parseInt(m[2]!, 10);
-        console.log(`[relay] BARRIER ${barrierPhase} from party ${pid}`);
         setBarriers(prev => {
           const next = { ...prev };
           const s = new Set(prev[barrierPhase]);
@@ -606,16 +603,10 @@ export function ThresholdSign({
         return;
       }
 
-      if (!sessionRef.current) {
-        console.warn('[relay] blob arrived but session is null — dropped');
-        return;
-      }
+      if (!sessionRef.current) return;
       const result = addBlob(sessionRef.current, text);
       if (result.ok) {
-        console.log('[relay] addBlob accepted from party', from);
         setSession({ ...sessionRef.current });
-      } else {
-        console.warn('[relay] addBlob rejected:', result.error, 'blob preview:', text.slice(0, 50));
       }
     };
     relayClient.on('message', handler);
