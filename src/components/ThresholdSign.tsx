@@ -573,6 +573,35 @@ export function ThresholdSign({
   }, [relayClient, phase, signingReadyPeers, activePartyIds.length, roundBlobSent]);
 
   // ---------------------------------------------------------------------------
+  // Relay: request missed blobs — if we haven't received a peer's blob after
+  // 2 seconds, send NEED_BLOB:<round>:<partyId> and the peer re-sends it
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    if (!relayClient || !roundBlobSent || !sessionRef.current) return;
+    const roundNum = phase === 'round1' ? 1 : phase === 'round2' ? 2 : phase === 'round3' ? 3 : 0;
+    if (roundNum === 0) return;
+
+    const interval = setInterval(() => {
+      if (!sessionRef.current || !relayClient) return;
+      const s = sessionRef.current;
+      const collected =
+        roundNum === 1 ? s.collectedRound1Hashes :
+        roundNum === 2 ? s.collectedRound2Commitments :
+        s.collectedRound3Responses;
+
+      // Ask for blobs we're missing
+      for (const pid of s.activePartyIds) {
+        if (pid === share.partyId) continue;
+        if (collected.has(pid)) continue;
+        void relayClient.broadcast(new TextEncoder().encode(`NEED_BLOB:${roundNum}:${share.partyId}`));
+        break; // one request per interval
+      }
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [relayClient, phase, roundBlobSent, share.partyId]);
+
+  // ---------------------------------------------------------------------------
   // Relay: subscribe to incoming messages and feed into addBlob
   // ---------------------------------------------------------------------------
   useEffect(() => {
@@ -585,6 +614,22 @@ export function ThresholdSign({
       if (readyMatch) {
         const pid = parseInt(readyMatch[1]!, 10);
         setSigningReadyPeers(prev => new Set(prev).add(pid));
+        return;
+      }
+
+      // Intercept NEED_BLOB requests — peer is asking us to re-send our blob
+      const needMatch = text.match(/^NEED_BLOB:(\d+):(\d+)$/);
+      if (needMatch) {
+        const needRound = parseInt(needMatch[1]!, 10);
+        if (sessionRef.current && relayClient) {
+          const blob =
+            needRound === 1 ? sessionRef.current.myRound1Blob :
+            needRound === 2 ? sessionRef.current.myRound2Blob :
+            needRound === 3 ? sessionRef.current.myRound3Blob : null;
+          if (blob) {
+            void relayClient.broadcast(new TextEncoder().encode(blob));
+          }
+        }
         return;
       }
 
