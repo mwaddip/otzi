@@ -551,8 +551,8 @@ export function SigningPage({ onSettings, prefill, onPrefillConsumed, initialSes
             Copy Signature
           </button>
 
-          {/* Broadcast button — only if wallet is configured */}
-          {config.wallet && !txResult && (
+          {/* Broadcast button — only for initiator with wallet configured */}
+          {config.wallet && !txResult && isInitiator && (
             <button className="btn btn-primary btn-full" onClick={handleBroadcast} disabled={broadcasting}>
               {broadcasting ? <span className="spinner" /> : 'Broadcast Transaction'}
             </button>

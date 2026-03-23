@@ -453,6 +453,11 @@ export function ThresholdSign({
         setSession({ ...sessionRef.current });
         setPhase('complete');
         onSignatureReady(sig);
+        // Leader: broadcast signature to joiners so they can complete too
+        if (isLeader && relayClient) {
+          const sigHex = Array.from(sig).map(b => b.toString(16).padStart(2, '0')).join('');
+          void broadcastBlob(`COMPLETE:${sigHex}`);
+        }
       } else {
         combineAttemptRef.current++;
         if (relayClient && isLeader && combineAttemptRef.current < MAX_COMBINE_ATTEMPTS) {
@@ -483,8 +488,8 @@ export function ThresholdSign({
             blobsSentRef.current.add(1);
           }
         } else if (!isLeader && relayClient) {
-          // Joiner: combine failed, wait for leader to restart
-          setBlobError('Waiting for leader to restart...');
+          // Joiner: shouldn't reach here — leader sends COMPLETE
+          setBlobError('Waiting for leader...');
         } else {
           setBlobError(`Signing failed after ${combineAttemptRef.current} attempts. Click Retry to start over.`);
           setPhase('failed');
@@ -609,6 +614,15 @@ export function ThresholdSign({
     const handler = (_from: number, payload: Uint8Array) => {
       const text = new TextDecoder().decode(payload);
 
+      // Handle COMPLETE message from leader — signing succeeded
+      if (text.startsWith('COMPLETE:')) {
+        const sigHex = text.slice(9);
+        const sig = new Uint8Array(sigHex.match(/.{2}/g)!.map(b => parseInt(b, 16)));
+        setPhase('complete');
+        onSignatureReady(sig);
+        return;
+      }
+
       // Handle STATE messages from peers
       const stateMatch = text.match(/^STATE:(\d+):(\d+):([\d,]*)$/);
       if (stateMatch) {
@@ -629,18 +643,16 @@ export function ThresholdSign({
           }
         }
 
-        // Joiner: follow the leader
-        if (!isLeader && peerRound > myRound && myRound >= 1 && myRound <= 3) {
-          // Leader is ahead — advance if we have all blobs for our current round
+        // Joiner: follow the leader through rounds 1→2 and 2→3
+        // (round 3→complete is handled by COMPLETE message, not combine)
+        if (!isLeader && peerRound > myRound && myRound >= 1 && myRound <= 2) {
           const needed = s.activePartyIds.length;
           const collected =
             myRound === 1 ? s.collectedRound1Hashes.size :
-            myRound === 2 ? s.collectedRound2Commitments.size :
-            s.collectedRound3Responses.size;
+            s.collectedRound2Commitments.size;
           if (collected >= needed) {
             if (myRound === 1) advanceToRound2();
             else if (myRound === 2) advanceToRound3();
-            else if (myRound === 3) doCombine();
           }
         }
 
