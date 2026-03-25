@@ -294,6 +294,11 @@ export function configRoutes(store: ConfigStore, userStore: UserStore, requireAd
           }
         }
       }
+      if (backup.users?.invites && Array.isArray(backup.users.invites)) {
+        for (const inv of backup.users.invites as Array<{ code: string; role: 'admin' | 'user'; usesLeft: number; expiresAt: number }>) {
+          userStore.addInvite(inv);
+        }
+      }
       if (backup.users?.settings?.everybodyCanRead !== undefined) {
         userStore.setEverybodyCanRead(backup.users.settings.everybodyCanRead);
       }

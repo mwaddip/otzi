@@ -118,6 +118,13 @@ export class UserStore {
     return [...this.db.invites];
   }
 
+  addInvite(invite: Invite): void {
+    if (!this.db.invites.some(i => i.code === invite.code)) {
+      this.db.invites.push(invite);
+      this.save();
+    }
+  }
+
   removeInvite(code: string): void {
     this.db.invites = this.db.invites.filter(i => i.code !== code);
     this.save();
