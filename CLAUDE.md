@@ -1,3 +1,5 @@
+@~/projects/OVERRIDES.md
+
 # CLAUDE.md — Ötzi (PERMAFROST Vault)
 
 ## Project Overview
