@@ -271,6 +271,21 @@ export function InstallWizard({ onComplete }: Props) {
             ))}
           </div>
 
+          {storageMode === 'encrypted-portable' && (
+            <div className="warning" style={{ marginBottom: 16 }}>
+              <strong>Advanced setup.</strong> Portable mode keeps nothing on the server — you must download and re-upload your encrypted config each session. If you lose the config file, all keys are unrecoverable.{' '}
+              <a
+                href="https://github.com/mwaddip/otzi/blob/master/docs/portable-mode.md"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: 'var(--accent)', textDecoration: 'underline' }}
+              >
+                Read the portable mode guide
+              </a>{' '}
+              before choosing this option.
+            </div>
+          )}
+
           {storageMode === 'encrypted-persistent' && (
             <div style={{ marginBottom: 16 }}>
               <div className="form-row">
