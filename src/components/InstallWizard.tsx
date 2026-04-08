@@ -15,7 +15,7 @@ interface Props {
 
 export function InstallWizard({ onComplete }: Props) {
   const [step, setStep] = useState<1 | 2 | 3>(1);
-  const [authMode, setAuthMode] = useState<'password' | 'wallet'>('password');
+  const [authMode, setAuthMode] = useState<'password' | 'wallet'>('wallet');
   // walletAddress is the ML-DSA identity: 0x + hex(SHA256(mldsaPubKey)) — NOT p2tr
   const [walletAddress, setWalletAddress] = useState('');
   const [walletConnecting, setWalletConnecting] = useState(false);
@@ -177,8 +177,8 @@ export function InstallWizard({ onComplete }: Props) {
           <p>How should this instance control access?</p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 16 }}>
             {([
+              ['wallet', 'OPWallet (ML-DSA)', 'Authenticate with OPWallet signatures. Role-based access for multiple users. Recommended.'],
               ['password', 'Admin Password', 'Protect settings with a password. Simple setup.'],
-              ['wallet', 'OPWallet (ML-DSA)', 'Authenticate with OPWallet signatures. Role-based access for multiple users.'],
             ] as const).map(([value, label, desc]) => (
               <label key={value} title={value === 'wallet' ? 'ML-DSA is a post-quantum digital signature algorithm. OPWallet signs a cryptographic challenge to prove your identity.' : undefined} style={{
                 display: 'flex', alignItems: 'flex-start', gap: 12, padding: 12,
