@@ -125,7 +125,36 @@ curl -X POST http://localhost:8080/api/hosting \
 |------|-------------|
 | **Persistent** | Config stored as plaintext JSON. For trusted environments. |
 | **Encrypted Persistent** | Config encrypted with AES-256-GCM on disk. Password required on each restart. |
-| **Encrypted Portable** | Config downloaded to your machine. Upload + password each session. Nothing stored on the server. |
+| **Encrypted Portable** | Config lives only in server memory. Admin downloads an encrypted backup and re-uploads it on each new server session. Nothing is ever written to disk. |
+
+#### Portable mode in practice
+
+Portable mode is the most paranoid option — keys never touch the server filesystem — but it has trade-offs you should understand before choosing it.
+
+**How it works:**
+
+- After the install wizard, the entire vault config (wallet, DKG shares, contracts, manifest, users) lives in the server process's memory.
+- Once initialized, the instance **stays loaded and fully operational** for as long as the server process keeps running. Joiners can connect, ceremonies can run, transactions can be signed and broadcast — all without restarting or re-uploading anything.
+- When the server is **rebooted, restarted, redeployed, or nuked**, the in-memory config is wiped. The next visitor sees the install wizard.
+- To recover, the admin restores from their encrypted backup file via the wizard's **Restore from Backup** option.
+
+**Critical workflow:**
+
+1. Complete the install wizard with **Encrypted Portable** selected.
+2. Generate a wallet (or skip).
+3. Run the DKG ceremony.
+4. **Download the encrypted config** when the orange banner appears at the top of the page. The banner stays visible on every page until you click it. This file is your only persistent copy of everything.
+5. Store the `.enc` file somewhere safe (multiple copies recommended).
+6. Use the instance normally. After any meaningful change (new contract, manifest update, added user), download a fresh backup from **Settings > Backup**.
+7. If the server ever restarts, visit the URL → **Restore from Backup** on the wizard → upload your `.enc` file → enter the password.
+
+**How joiners experience portable mode:**
+
+- In **password auth mode**, joiners need no password to participate in signing — they just visit the URL and load their share file. The admin password only gates admin operations.
+- In **wallet auth mode**, joiners authenticate via OPWallet or use a `?session=CODE` URL the admin shares for a single ceremony.
+- In both modes, joiners can only connect while the admin's config is loaded in memory. If the server has restarted and the admin hasn't restored yet, joiners see the install wizard.
+
+For the full guide, see [`docs/portable-mode.md`](docs/portable-mode.md).
 
 ## Architecture
 
