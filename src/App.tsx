@@ -4,8 +4,9 @@ import { WalletSetup } from './components/WalletSetup';
 import { DKGWizard } from './components/DKGWizard';
 import { SigningPage } from './components/SigningPage';
 import { Settings } from './components/Settings';
-import { getStatus } from './lib/api';
+import { getStatus, hasAdminToken } from './lib/api';
 import { WalletAuth } from './components/WalletAuth';
+import { PortableConfigBanner } from './components/PortableConfigBanner';
 import { toggleTheme, getTheme } from './lib/theme';
 import type { ManifestConfig } from './lib/manifest-types';
 import './styles/global.css';
@@ -105,6 +106,8 @@ export function App() {
     const s = params.get('session');
     return s && s.trim().length >= 6 ? s.trim().toUpperCase() : null;
   });
+  const [portableConfigPending, setPortableConfigPending] = useState(false);
+  const [portableConfigDownloaded, setPortableConfigDownloaded] = useState(false);
 
   const checkStatus = useCallback(async () => {
     try {
@@ -135,12 +138,19 @@ export function App() {
         } else {
           setView('signing');
         }
+
+        // Portable mode admins must download their encrypted config after DKG.
+        // Banner stays visible across pages until they click download.
+        const isPortable = status.storageMode === 'encrypted-portable';
+        const dkgDone = status.setupState.dkgComplete;
+        const isAdmin = hasAdminToken();
+        setPortableConfigPending(isPortable && dkgDone && isAdmin && !portableConfigDownloaded);
       }
     } catch (e) {
       console.error('Failed to check status:', e);
       setView('wizard');
     }
-  }, [pendingSessionCode]);
+  }, [pendingSessionCode, portableConfigDownloaded]);
 
   useEffect(() => { checkStatus(); }, [checkStatus]);
 
@@ -212,6 +222,14 @@ export function App() {
 
   return (
     <>
+      {portableConfigPending && (
+        <PortableConfigBanner
+          onDownloaded={() => {
+            setPortableConfigDownloaded(true);
+            setPortableConfigPending(false);
+          }}
+        />
+      )}
       {showGlobalToggle && <ThemeToggle fixed />}
       {content}
     </>
