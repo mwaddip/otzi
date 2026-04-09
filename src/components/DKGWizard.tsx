@@ -1369,13 +1369,13 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
   }, [state.step, flinkR2Count, state.parties, state.frostKeyPackage, state.threshold, relayClient, relaySendBlob]);
 
   // ════════════════════════════════════════════════════════════════════
-  // STEP: COMPLETE (Finalize)
+  // FINALIZE: runs at frost-link entry (moved from complete step)
   // ════════════════════════════════════════════════════════════════════
 
   const finalizeComputed = useRef(false);
 
   useEffect(() => {
-    if (state.step !== 'complete' || finalizeComputed.current) return;
+    if (state.step !== 'frost-link' || finalizeComputed.current) return;
     if (!state.instance || !state.phase2FinalResult) return;
     if (!state.frostR2Secret) return;
     finalizeComputed.current = true;
