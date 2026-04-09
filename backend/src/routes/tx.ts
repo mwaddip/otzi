@@ -334,12 +334,19 @@ export function txRoutes(store: ConfigStore, requireUser: RequestHandler, requir
       const { signer: frostSigner, sighashesPromise, resolveSignatures, rejectSignatures } =
         FrostPsbtSigner.createTwoPhase(tweakedPubKey, internalXOnly, untweakedPubKey);
 
-      // Monkey-patch multiSignPsbt onto the wallet keypair
+      // Monkey-patch the wallet keypair: FROST key for UTXO/script matching,
+      // multiSignPsbt for threshold BTC signing. The real private key is still
+      // used internally by the SDK for protocol-level sigs (legacy sig, link proof).
       const hybridSigner = wallet.keypair as typeof wallet.keypair & {
         multiSignPsbt: typeof frostSigner.multiSignPsbt;
       };
       (hybridSigner as unknown as Record<string, unknown>).multiSignPsbt =
         frostSigner.multiSignPsbt.bind(frostSigner);
+      // Override publicKey so the SDK derives the FROST p2tr for UTXO lookups
+      Object.defineProperty(hybridSigner, 'publicKey', {
+        value: untweakedPubKey,
+        configurable: true,
+      });
 
       // Start sendTransaction — it will suspend at the FROST signing step
       const sendTxPromise = callResult.sendTransaction({
