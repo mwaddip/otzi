@@ -30,9 +30,9 @@ function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
 
 // ── Blob envelope ──
 
-type BlobType = 'session' | 'p1' | 'p2pub' | 'p2priv' | 'p3priv' | 'p4' | 'frost-r1' | 'frost-r2';
+export type BlobType = 'session' | 'p1' | 'p2pub' | 'p2priv' | 'p3priv' | 'p4' | 'frost-r1' | 'frost-r2' | 'frost-sign-r1' | 'frost-sign-r2';
 
-interface DKGBlobEnvelope {
+export interface DKGBlobEnvelope {
   v: 2;
   type: BlobType;
   from: number;
@@ -41,7 +41,7 @@ interface DKGBlobEnvelope {
   data: string;      // hex-encoded payload
 }
 
-function encodeEnvelope(type: BlobType, from: number, to: number, sid: Uint8Array, data: Uint8Array): string {
+export function encodeEnvelope(type: BlobType, from: number, to: number, sid: Uint8Array, data: Uint8Array): string {
   const envelope: DKGBlobEnvelope = {
     v: 2,
     type,
@@ -53,7 +53,7 @@ function encodeEnvelope(type: BlobType, from: number, to: number, sid: Uint8Arra
   return btoa(JSON.stringify(envelope));
 }
 
-function decodeEnvelope(blob: string): DKGBlobEnvelope | null {
+export function decodeEnvelope(blob: string): DKGBlobEnvelope | null {
   try {
     const json = atob(blob.trim());
     const obj = JSON.parse(json) as DKGBlobEnvelope;
