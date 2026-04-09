@@ -2,7 +2,9 @@
 
 Post-quantum multisig vault for [OPNet](https://opnet.org) Bitcoin L1 smart contracts.
 
-PERMAFROST Vault is a self-hosted application that combines distributed key generation (DKG), threshold ML-DSA signing, wallet management, and OPNet transaction broadcasting into a single interface. T-of-N parties each produce their own secret share of an ML-DSA (post-quantum) signing key — without any single party ever seeing the full secret.
+PERMAFROST Vault is a self-hosted application that combines distributed key generation (DKG), threshold ML-DSA signing, FROST threshold BTC signing, wallet management, and OPNet transaction broadcasting into a single interface. T-of-N parties each produce their own secret shares of both an ML-DSA (post-quantum) signing key and a FROST secp256k1 BTC key — without any single party ever seeing the full secrets.
+
+> **Note:** FROST threshold BTC signing is new and unaudited. The ML-DSA threshold protocol has been in production since v2.0. Use FROST on testnet until it has been reviewed.
 
 ## How it works
 
@@ -10,15 +12,19 @@ PERMAFROST Vault is a self-hosted application that combines distributed key gene
 
 1. **One party creates** a session (choosing T, N, and security level).
 2. **Other parties join** by pasting the session code.
-3. The ceremony runs **four phases** (Commit, Reveal, Masks, Aggregate), exchanging blobs between all parties.
-4. When complete, each party **downloads their encrypted share file** and independently verifies the combined public key.
+3. The ceremony runs **eight phases** — four ML-DSA phases (Commit, Reveal, Masks, Aggregate) followed by two FROST phases (FROST Commit, FROST Shares), then finalization.
+4. When complete, each party **downloads their encrypted share file** containing both ML-DSA and FROST key shares, and independently verifies the combined public keys.
+5. The FROST aggregate key becomes the vault's **BTC address** — no separate wallet generation needed.
 
 ### Signing
 
 1. One party builds a transaction (contract, method, parameters) and the vault encodes it into calldata.
 2. Each signing party **loads their share file** and enters their password.
-3. The signing protocol runs **three rounds** of blob exchange, then combines the partial responses into a standard FIPS 204 ML-DSA signature.
-4. One party **broadcasts** the signed transaction to the OPNet network. The server prevents double-broadcast — other parties see the confirmed result.
+3. The **ML-DSA ceremony** runs three rounds of blob exchange, producing a FIPS 204 threshold signature for the OPNet contract call.
+4. The **FROST ceremony** runs two rounds of blob exchange, producing BIP340 Schnorr signatures for the Bitcoin transaction inputs (one per input, batched in a single round).
+5. One party **broadcasts** the signed transaction to the OPNet network. The server prevents double-broadcast — other parties see the confirmed result.
+
+From the user's perspective, steps 3-4 are one uninterrupted flow over the same relay session.
 
 ### Blob exchange
 
@@ -182,13 +188,13 @@ For the full guide, see [`docs/portable-mode.md`](docs/portable-mode.md).
 ├── src/                  # React frontend (Vite)
 │   ├── components/       # DKGWizard, InstallWizard, WalletSetup,
 │   │                     # SigningPage, MessageBuilder, ThresholdSign,
-│   │                     # ShareGate, Settings, PasswordModal
-│   └── lib/              # DKG protocol, threshold signing, relay client,
-│                         # API client, crypto, share serialization
+│   │                     # FrostSign, ShareGate, Settings, PasswordModal
+│   └── lib/              # DKG protocol, threshold signing, FROST signing,
+│                         # relay client, API client, crypto, share serialization
 ├── backend/              # Node.js/Express backend
 │   └── src/
 │       ├── lib/          # ConfigStore, encryption, OPNet client,
-│       │                 # ThresholdMLDSASigner adapter
+│       │                 # ThresholdMLDSASigner, FrostPsbtSigner
 │       ├── routes/       # config, wallet, tx, balances, hosting
 │       └── server.ts     # Express entry point + WS proxy
 ├── relay/                # Go WebSocket relay server
@@ -239,6 +245,7 @@ Produces a self-contained HTML file in `dist-offline/` that runs from `file://` 
 ## Security
 
 - **Post-quantum signatures**: ML-DSA (FIPS 204) via threshold signing — no single party holds the full key.
+- **Threshold BTC signing**: FROST (RFC 9591, secp256k1-SHA256-TR ciphersuite) produces standard BIP340 Schnorr signatures. The BTC funding wallet is threshold-controlled — no single party holds the private key.
 - **E2E relay encryption**: All relay messages encrypted with ECDH (P-256) + AES-256-GCM. The relay server only forwards ciphertext.
 - **Share file encryption**: AES-256-GCM with PBKDF2-derived key (600k iterations, SHA-256).
 - **Blob integrity**: DKG phase 3 blobs include SHA-256 checksums and polynomial coefficient range validation.

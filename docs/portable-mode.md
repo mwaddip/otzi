@@ -8,8 +8,8 @@ This mode is best for **air-gapped or temporary setups** where no data should re
 
 A single file holds everything your instance needs:
 
-- **Wallet** — BTC mnemonic, P2TR address, public/tweaked keys
-- **DKG shares** — threshold key material, combined ML-DSA public key, party count, threshold parameters
+- **Wallet** — internal BTC keypair (for SDK protocol signatures)
+- **DKG shares** — threshold key material, combined ML-DSA public key, FROST aggregate BTC key, party count, threshold parameters
 - **Contracts** — registered contract addresses, ABIs, methods
 - **Hosting** — domain, port, HTTPS settings
 - **Manifest** — project manifest config
@@ -21,9 +21,8 @@ If you lose this file, **everything is unrecoverable.**
 ## Initial Setup Flow
 
 1. **Install wizard:** choose network, auth mode (Admin Password or OPWallet), select **Encrypted Portable** as storage mode.
-2. **Wallet generation:** generate a BTC keypair (or skip — signatures will be display-only).
-3. **DKG ceremony:** complete the distributed key generation with all parties.
-4. **Download your encrypted config.** A persistent banner appears at the top of every page after DKG completes. Click it, enter a password, and save the `.enc` file somewhere safe.
+2. **DKG ceremony:** complete the distributed key generation with all parties. The ceremony generates both ML-DSA threshold signing keys and FROST BTC threshold keys. The FROST aggregate key becomes the vault's BTC address — an internal wallet for SDK protocol signatures is auto-generated (no user action required).
+3. **Download your encrypted config.** A persistent banner appears at the top of every page after DKG completes. Click it, enter a password, and save the `.enc` file somewhere safe.
 
 The banner stays visible until you click download. Do not dismiss it. If the server restarts before you download, your keys are gone.
 
