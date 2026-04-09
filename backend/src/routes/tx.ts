@@ -1,5 +1,5 @@
 import { Router, type Request, type Response, type RequestHandler } from 'express';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { Address, BinaryWriter } from '@btc-vision/transaction';
 import { toXOnly, tapTweakHash } from '@btc-vision/bitcoin';
 import { getContract, OP_20_ABI } from 'opnet';
@@ -56,6 +56,13 @@ export function txRoutes(store: ConfigStore, requireUser: RequestHandler, requir
 
   // Broadcast lock: messageHash → result (prevents double-broadcast)
   const broadcastResults = new Map<string, { transactionId?: string; estimatedFees?: string; error?: string; _ts?: number }>();
+
+  // Cached challenges for FROST two-build flow (5 min TTL)
+  const challengeCache = new Map<string, { challenge: unknown; ts: number }>();
+  setInterval(() => {
+    const cutoff = Date.now() - 5 * 60 * 1000;
+    for (const [k, v] of challengeCache) { if (v.ts < cutoff) challengeCache.delete(k); }
+  }, 60 * 1000);
 
   // Clean up old broadcast results every 10 minutes (keep for 1 hour)
   setInterval(() => {
@@ -347,7 +354,9 @@ export function txRoutes(store: ConfigStore, requireUser: RequestHandler, requir
         type: h.type,
       }));
 
-      res.json({ sighashes: sighashesHex, challenge: JSON.stringify(challenge) });
+      const challengeToken = randomBytes(16).toString('hex');
+      challengeCache.set(challengeToken, { challenge, ts: Date.now() });
+      res.json({ sighashes: sighashesHex, challengeToken });
     } catch (e) {
       res.status(500).json({ error: (e as Error).message });
     }
@@ -361,10 +370,10 @@ export function txRoutes(store: ConfigStore, requireUser: RequestHandler, requir
     };
 
     if (frostSignatures) {
-      const { contract: contractAddr, method, params: rawParams, paramTypes, abi, signature, messageHash, challenge: challengeJson } = req.body as {
+      const { contract: contractAddr, method, params: rawParams, paramTypes, abi, signature, messageHash, challengeToken } = req.body as {
         contract: string; method: string; params: unknown[];
         paramTypes?: Array<'address' | 'u256' | 'bytes'>; abi?: unknown;
-        signature: string; messageHash?: string; challenge?: string;
+        signature: string; messageHash?: string; challengeToken?: string;
       };
 
       if (!signature || !/^[0-9a-fA-F]+$/.test(signature)) {
@@ -434,8 +443,10 @@ export function txRoutes(store: ConfigStore, requireUser: RequestHandler, requir
           return;
         }
 
-        // Reuse the challenge from the sighash endpoint to ensure identical tx build
-        const challenge = challengeJson ? JSON.parse(challengeJson) : await provider.getChallenge();
+        // Reuse the cached challenge from the sighash endpoint to ensure identical tx build
+        const cached = challengeToken ? challengeCache.get(challengeToken) : undefined;
+        const challenge = cached?.challenge ?? await provider.getChallenge();
+        if (challengeToken) challengeCache.delete(challengeToken);
         const sigBytes = Buffer.from(signature, 'hex');
         const pubKeyBytes = Buffer.from(config.permafrost.combinedPubKey, 'hex');
         const thresholdSigner = new ThresholdMLDSASigner(sigBytes, pubKeyBytes);
