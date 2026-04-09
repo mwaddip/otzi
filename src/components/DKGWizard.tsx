@@ -618,7 +618,7 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
     const handler = (_from: number, payload: Uint8Array) => {
       const text = new TextDecoder().decode(payload);
       // Intercept barrier messages: "BARRIER:<phase>:<partyId>"
-      const m = text.match(/^BARRIER:(\w+):(\d+)$/);
+      const m = text.match(/^BARRIER:([\w-]+):(\d+)$/);
       if (m) {
         const phase = m[1]!;
         const pid = parseInt(m[2]!, 10);
@@ -1284,6 +1284,8 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
           level: state.level,
           combinedPubKey: toHex(state.publicKey),
           shareData: shareFile.encrypted,
+          frostAggregateKey: toHex(state.frostPublicKeyPackage!.verifyingKey),
+          frostUntweakedAggregateKey: toHex(state.frostPublicKeyPackage!.untweakedVerifyingKey),
         });
         onComplete?.();
       } catch (e) {
