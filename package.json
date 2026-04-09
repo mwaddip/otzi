@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@btc-vision/post-quantum": "file:vendor/post-quantum",
+    "frots": "github:mwaddip/frots",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

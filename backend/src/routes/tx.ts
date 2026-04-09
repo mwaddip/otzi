@@ -1,10 +1,12 @@
 import { Router, type Request, type Response, type RequestHandler } from 'express';
 import { createHash } from 'node:crypto';
 import { Address, BinaryWriter } from '@btc-vision/transaction';
+import { toXOnly, tapTweakHash } from '@btc-vision/bitcoin';
 import { getContract, OP_20_ABI } from 'opnet';
 import { ConfigStore } from '../lib/config-store.js';
 import { getProvider, getNetwork, generateWallet } from '../lib/opnet-client.js';
 import { ThresholdMLDSASigner } from '../lib/threshold-signer.js';
+import { FrostPsbtSigner } from '../lib/frost-psbt-signer.js';
 
 // Normalize manifest ABI entries to match opnet SDK format
 const ABI_TYPE_MAP: Record<string, string> = {
@@ -315,9 +317,21 @@ export function txRoutes(store: ConfigStore, requireUser: RequestHandler, requir
       const pubKeyBytes = Buffer.from(config.permafrost.combinedPubKey, 'hex');
       const thresholdSigner = new ThresholdMLDSASigner(sigBytes, pubKeyBytes);
 
+      // FROST spike: wrap the wallet's keypair in a FrostPsbtSigner to exercise
+      // the SDK's multiSignPsbt (wallet-based) code path instead of the
+      // non-wallet path that demands a raw private key for Taproot tweaking.
+      const internalXOnly = toXOnly(wallet.keypair.publicKey);
+      const tweak = tapTweakHash(internalXOnly, undefined);
+      const tweakedKeypair = wallet.keypair.tweak(tweak);
+      const frostSigner = new FrostPsbtSigner(
+        (hash: Uint8Array) => tweakedKeypair.signSchnorr!(hash as never),
+        tweakedKeypair.publicKey,
+        internalXOnly,
+      );
+
       // Send transaction
       const receipt = await callResult.sendTransaction({
-        signer: wallet.keypair,
+        signer: frostSigner as never,
         mldsaSigner: thresholdSigner,
         refundTo: config.wallet.p2tr,
         network,
