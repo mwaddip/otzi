@@ -175,106 +175,6 @@ function PartyTracker({ activePartyIds, collected, selfId }: PartyTrackerProps) 
 }
 
 // ---------------------------------------------------------------------------
-// Blob exchange UI
-// ---------------------------------------------------------------------------
-
-interface BlobExchangeProps {
-  roundNumber: number;
-  myBlob: string;
-  threshold: number;
-  collected: Map<number, unknown>;
-  activePartyIds: number[];
-  selfId: number;
-  onAddBlob: (blob: string) => void;
-  onProceed: () => void;
-  canProceed: boolean;
-  error: string;
-}
-
-function BlobExchange({
-  roundNumber,
-  myBlob,
-  threshold,
-  collected,
-  activePartyIds,
-  selfId,
-  onAddBlob,
-  onProceed,
-  canProceed,
-  error,
-}: BlobExchangeProps) {
-  const [importError, setImportError] = useState('');
-
-  const handleDownload = useCallback(() => {
-    const blob = new Blob([myBlob], { type: 'application/octet-stream' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `round${roundNumber}-party${selfId}.blob`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }, [myBlob, roundNumber, selfId]);
-
-  const handleFileImport = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    setImportError('');
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const text = (reader.result as string).trim();
-      if (!text) {
-        setImportError('Empty file');
-        return;
-      }
-      onAddBlob(text);
-    };
-    reader.readAsText(file);
-    // Reset input so the same file can be re-selected
-    e.target.value = '';
-  }, [onAddBlob]);
-
-  const needed = threshold;
-  const blobSizeKB = (myBlob.length / 1024).toFixed(0);
-
-  return (
-    <div className="threshold-blob-exchange">
-      <div className="threshold-section-title">Round {roundNumber}</div>
-
-      <PartyTracker activePartyIds={activePartyIds} collected={collected} selfId={selfId} />
-
-      {/* Download own blob */}
-      <div className="step-field">
-        <label>Your blob — send this file to co-signers ({blobSizeKB} KB)</label>
-        <button className="step-execute-btn" onClick={handleDownload}>
-          Download round{roundNumber}-party{selfId}.blob
-        </button>
-      </div>
-
-      {/* Import co-signer blob */}
-      <div className="step-field">
-        <label>
-          Import co-signer blob file ({collected.size}/{needed} collected)
-        </label>
-        <input type="file" accept=".blob,.txt" onChange={handleFileImport} />
-      </div>
-
-      {(error || importError) && (
-        <div className="step-status error">{error || importError}</div>
-      )}
-
-      <button
-        className="step-execute-btn"
-        onClick={onProceed}
-        disabled={!canProceed}
-        style={{ marginTop: 8 }}
-      >
-        Proceed to {roundNumber < 3 ? `Round ${roundNumber + 1}` : 'Combine'}
-      </button>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Main ThresholdSign component
 // ---------------------------------------------------------------------------
 
@@ -316,7 +216,6 @@ export function ThresholdSign({
   const [session, setSession] = useState<SigningSession | null>(null);
   const [blobError, setBlobError] = useState('');
   const [activePartyIds, setActivePartyIds] = useState<number[]>([]);
-  const [partyInput, setPartyInput] = useState('');
 
   // Session ref — intentionally no unmount cleanup here because StrictMode's
   // double-mount cycle would destroy round1State/round2State while the session
@@ -325,20 +224,6 @@ export function ThresholdSign({
 
   // Ref to track whether auto-init has fired (prevent double-start)
   const relayInitRef = useRef(false);
-  const autoStartRef = useRef(false);
-
-  // Parse active party IDs from comma-separated input.
-  // The threshold library requires EXACTLY T active parties (not more).
-  const parsePartyIds = useCallback((): number[] | null => {
-    const parts = partyInput.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
-    // Ensure our own ID is included
-    if (!parts.includes(share.partyId)) {
-      parts.push(share.partyId);
-    }
-    const unique = [...new Set(parts)].sort((a, b) => a - b);
-    if (unique.length !== share.threshold) return null;
-    return unique;
-  }, [partyInput, share.partyId, share.threshold]);
 
   // Helper: broadcast a blob string via relay (returns promise)
   const broadcastBlob = useCallback(async (blob: string): Promise<void> => {
@@ -355,7 +240,7 @@ export function ThresholdSign({
   const peerStatesRef = useRef<Map<number, { round: number; blobsSent: number[] }>>(new Map());
   const blobsSentRef = useRef<Set<number>>(new Set());
 
-  // Start signing (shared between manual and relay modes)
+  // Start signing with the given party IDs
   const startSigningWithIds = useCallback((ids: number[]) => {
     setActivePartyIds(ids);
     const sess = createSession(message, share, ids);
@@ -372,37 +257,6 @@ export function ThresholdSign({
       blobsSentRef.current.add(1);
     }
   }, [message, share, relayClient, broadcastBlob]);
-
-  // Auto-start signing when threshold === parties (all parties must participate, no choice)
-  useEffect(() => {
-    if (autoStartRef.current || relayClient || phase !== 'idle') return;
-    if (share.threshold !== share.parties) return;
-    autoStartRef.current = true;
-    const ids = Array.from({ length: share.parties }, (_, i) => i);
-    startSigningWithIds(ids);
-  }, [share.threshold, share.parties, relayClient, phase, startSigningWithIds]);
-
-  // Start signing (manual mode — parses party IDs from input)
-  const startSigning = useCallback(() => {
-    const ids = parsePartyIds();
-    if (!ids || ids.length < share.threshold) return;
-    startSigningWithIds(ids);
-  }, [share.threshold, parsePartyIds, startSigningWithIds]);
-
-  // Current round number for validation
-  const currentRound = phase === 'round1' ? 1 : phase === 'round2' ? 2 : phase === 'round3' ? 3 : undefined;
-
-  // Add blob from co-signer
-  const handleAddBlob = useCallback((blob: string) => {
-    if (!sessionRef.current) return;
-    setBlobError('');
-    const result = addBlob(sessionRef.current, blob, currentRound);
-    if (!result.ok) {
-      setBlobError(result.error ?? 'Invalid blob');
-      return;
-    }
-    setSession({ ...sessionRef.current });
-  }, [currentRound]);
 
   // Shared restart-from-round-1 logic for auto-retry (leader only, relay mode)
   const retryAttemptRef = useRef(0);
@@ -748,13 +602,6 @@ export function ThresholdSign({
 
   const needed = share.threshold;
 
-  // Build default party IDs string — show only the first T parties as example
-  const defaultPartyIds = share.threshold === share.parties
-    ? Array.from({ length: share.parties }, (_, i) => i).join(', ')
-    : Array.from({ length: share.threshold }, (_, i) => i).join(', ');
-  const parsedIds = parsePartyIds();
-  const canStartSigning = !!parsedIds && parsedIds.length === share.threshold;
-
   // ---------------------------------------------------------------------------
   // Relay progress UI helper
   // ---------------------------------------------------------------------------
@@ -786,41 +633,7 @@ export function ThresholdSign({
         params={txParams}
       />
 
-      {phase === 'idle' && !relayClient && share.threshold < share.parties && (
-        <div className="threshold-idle">
-          <p className="threshold-hint">
-            This step requires {share.threshold}-of-{share.parties} threshold
-            signing. You are Party {share.partyId}. Choose exactly{' '}
-            {share.threshold} parties to participate (including yourself).
-          </p>
-          <div className="step-field" style={{ marginBottom: 12 }}>
-            <label>Active signer party IDs (comma-separated, exactly {share.threshold} required)</label>
-            <input
-              type="text"
-              placeholder={defaultPartyIds}
-              value={partyInput}
-              onChange={(e) => setPartyInput(e.target.value)}
-            />
-          </div>
-          <div className="threshold-btn-row">
-            <button
-              className="step-execute-btn threshold-btn-half"
-              onClick={startSigning}
-              disabled={!canStartSigning}
-            >
-              Start Signing
-            </button>
-            <button
-              className="step-execute-btn threshold-btn-half threshold-btn-cancel"
-              onClick={handleCancel}
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
-
-      {phase === 'idle' && relayClient && (
+      {phase === 'idle' && (
         <div className="threshold-idle">
           <div className="threshold-hint" style={{ textAlign: 'center', padding: '8px 0' }}>
             Waiting for relay to be ready...
@@ -828,62 +641,17 @@ export function ThresholdSign({
         </div>
       )}
 
-      {phase === 'round1' && session?.myRound1Blob && (
-        relayClient ? (
-          renderRelayProgress(1, session.collectedRound1Hashes)
-        ) : (
-          <BlobExchange
-            roundNumber={1}
-            myBlob={session.myRound1Blob}
-            threshold={needed}
-            collected={session.collectedRound1Hashes}
-            activePartyIds={activePartyIds}
-            selfId={share.partyId}
-            onAddBlob={handleAddBlob}
-            onProceed={advanceToRound2}
-            canProceed={session.collectedRound1Hashes.size >= needed}
-            error={blobError}
-          />
-        )
-      )}
+      {phase === 'round1' && session?.myRound1Blob &&
+        renderRelayProgress(1, session.collectedRound1Hashes)
+      }
 
-      {phase === 'round2' && session?.myRound2Blob && (
-        relayClient ? (
-          renderRelayProgress(2, session.collectedRound2Commitments)
-        ) : (
-          <BlobExchange
-            roundNumber={2}
-            myBlob={session.myRound2Blob}
-            threshold={needed}
-            collected={session.collectedRound2Commitments}
-            activePartyIds={activePartyIds}
-            selfId={share.partyId}
-            onAddBlob={handleAddBlob}
-            onProceed={advanceToRound3}
-            canProceed={session.collectedRound2Commitments.size >= needed}
-            error={blobError}
-          />
-        )
-      )}
+      {phase === 'round2' && session?.myRound2Blob &&
+        renderRelayProgress(2, session.collectedRound2Commitments)
+      }
 
-      {phase === 'round3' && session?.myRound3Blob && (
-        relayClient ? (
-          renderRelayProgress(3, session.collectedRound3Responses)
-        ) : (
-          <BlobExchange
-            roundNumber={3}
-            myBlob={session.myRound3Blob}
-            threshold={needed}
-            collected={session.collectedRound3Responses}
-            activePartyIds={activePartyIds}
-            selfId={share.partyId}
-            onAddBlob={handleAddBlob}
-            onProceed={doCombine}
-            canProceed={session.collectedRound3Responses.size >= needed}
-            error={blobError}
-          />
-        )
-      )}
+      {phase === 'round3' && session?.myRound3Blob &&
+        renderRelayProgress(3, session.collectedRound3Responses)
+      }
 
       {phase === 'complete' && (
         <div className="threshold-complete">

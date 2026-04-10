@@ -6,9 +6,7 @@
  * Each party runs this independently in their own browser.
  * No single party ever sees another's secret share.
  *
- * Supports two transport modes:
- * - Offline: manual copy/paste of blobs between parties
- * - Relay: auto-send/receive via encrypted WebSocket relay
+ * Transport: auto-send/receive via encrypted WebSocket relay
  */
 
 import { useState, useReducer, useCallback, useRef, useEffect } from 'react';
@@ -77,7 +75,7 @@ import { encodeFrostSignR1, decodeFrostSignR1, encodeFrostSignR2, decodeFrostSig
 
 type Step = 'join' | 'commit' | 'reveal' | 'masks' | 'aggregate' | 'frost-commit' | 'frost-shares' | 'frost-link' | 'complete';
 type Role = 'initiator' | 'joiner';
-type TransportMode = 'choose' | 'offline' | 'relay-create' | 'relay-join';
+type TransportMode = 'relay-create' | 'relay-join';
 
 interface DKGState {
   step: Step;
@@ -293,59 +291,6 @@ function PartyTracker({ collected, total, myPartyId, label }: {
   );
 }
 
-function PasteArea({ value, onChange, onProcess }: {
-  value: string;
-  onChange: (v: string) => void;
-  onProcess: (v: string) => void;
-}) {
-  return (
-    <div style={{ marginTop: 16 }}>
-      <textarea
-        className="blob-textarea"
-        placeholder="Paste a blob from another party here..."
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        rows={3}
-      />
-      <button
-        className="btn btn-secondary btn-full"
-        style={{ marginTop: 8 }}
-        onClick={() => onProcess(value)}
-        disabled={!value.trim()}
-      >
-        Process Blob
-      </button>
-    </div>
-  );
-}
-
-function BlobOutput({ blob, label, isPrivate, targetParty, onCopy, copiedLabel }: {
-  blob: string;
-  label: string;
-  isPrivate?: boolean;
-  targetParty?: number;
-  onCopy: (text: string, label: string) => void;
-  copiedLabel: string | null;
-}) {
-  return (
-    <div className={`blob-output-wrapper ${isPrivate ? 'private-blob-warning' : ''}`}>
-      {isPrivate && targetParty !== undefined && (
-        <div className="private-label">Private — share ONLY with Party {targetParty + 1}</div>
-      )}
-      <div className="blob-output-header">
-        <span>{label}</span>
-        <button
-          className="btn-copy"
-          onClick={() => onCopy(blob, label)}
-        >
-          {copiedLabel === label ? 'Copied!' : 'Copy'}
-        </button>
-      </div>
-      <div className="blob-output">{blob}</div>
-    </div>
-  );
-}
-
 // ── Relay progress indicator ──
 
 function RelayPhaseProgress({ phase, collected, total, label }: {
@@ -373,7 +318,6 @@ interface DKGWizardProps {
 
 export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {}) {
   const [state, dispatch] = useReducer(reducer, initialState);
-  const [pasteValue, setPasteValue] = useState('');
   const [copied, setCopied] = useState<string | null>(null);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [hostingConfig, setHostingConfig] = useState<import('../lib/vault-types').HostingConfig | null>(null);
@@ -386,7 +330,7 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
 
   // ── Transport mode state ──
   const [transportMode, setTransportMode] = useState<TransportMode>(
-    initialSessionCode && initialSessionCode.length >= 6 ? 'relay-join' : 'choose',
+    initialSessionCode && initialSessionCode.length >= 6 ? 'relay-join' : 'relay-create',
   );
   const [relayClient, setRelayClient] = useState<RelayClient | null>(null);
   const relayClientRef = useRef<RelayClient | null>(null);
@@ -399,8 +343,6 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
   const [relayFingerprint, setRelayFingerprint] = useState('');
   const [relayPartyCount, setRelayPartyCount] = useState(0);
   const [relayPartyTotal, setRelayPartyTotal] = useState(0);
-
-  const isRelayMode = transportMode === 'relay-create' || transportMode === 'relay-join';
 
   // Relay send completion flags (state, not refs, so auto-advance re-evaluates)
   const [phase1Sent, setPhase1Sent] = useState(false);
@@ -460,110 +402,7 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
   // ── Session ID prefix for validation ──
   const sidPrefix = state.sessionId ? getSessionIdPrefix(state.sessionId) : '';
 
-  // ── Smart paste handler (used by both offline paste and relay receive) ──
-  const handlePaste = useCallback((text: string) => {
-    if (!text.trim()) return;
-    dispatch({ type: 'SET_ERROR', error: null });
-    const info = identifyBlob(text.trim());
-    if (!info) {
-      dispatch({ type: 'SET_ERROR', error: 'Invalid blob format' });
-      return;
-    }
-    // Validate session ID
-    if (sidPrefix && info.sid !== sidPrefix) {
-      dispatch({ type: 'SET_ERROR', error: `Wrong session (expected ${sidPrefix.slice(0, 8)}..., got ${info.sid.slice(0, 8)}...)` });
-      return;
-    }
-    // Reject self-blobs
-    if (info.from === state.myPartyId && info.type !== 'session') {
-      dispatch({ type: 'SET_ERROR', error: 'This is your own blob — paste blobs from other parties' });
-      return;
-    }
-    // Reject blobs addressed to someone else
-    if (info.to !== -1 && info.to !== state.myPartyId) {
-      dispatch({ type: 'SET_ERROR', error: `This blob is addressed to Party ${info.to + 1}, not you` });
-      return;
-    }
-
-    // Route by type
-    switch (info.type) {
-      case 'p1': {
-        const broadcast = decodePhase1Broadcast(text.trim());
-        if (!broadcast) { dispatch({ type: 'SET_ERROR', error: 'Failed to decode Phase 1 blob' }); return; }
-        if (state.collectedPhase1.some(b => b.partyId === broadcast.partyId)) {
-          dispatch({ type: 'SET_ERROR', error: `Already have Phase 1 from Party ${broadcast.partyId + 1}` });
-          return;
-        }
-        dispatch({ type: 'ADD_PHASE1', broadcast });
-        break;
-      }
-      case 'p2pub': {
-        const broadcast = decodePhase2Broadcast(text.trim());
-        if (!broadcast) { dispatch({ type: 'SET_ERROR', error: 'Failed to decode Phase 2 public blob' }); return; }
-        if (state.collectedPhase2Pub.some(b => b.partyId === broadcast.partyId)) {
-          dispatch({ type: 'SET_ERROR', error: `Already have Phase 2 public from Party ${broadcast.partyId + 1}` });
-          return;
-        }
-        dispatch({ type: 'ADD_PHASE2_PUB', broadcast });
-        break;
-      }
-      case 'p2priv': {
-        const priv = decodePhase2Private(text.trim());
-        if (!priv) { dispatch({ type: 'SET_ERROR', error: 'Failed to decode Phase 2 private blob' }); return; }
-        if (state.collectedPhase2Priv.some(b => b.fromPartyId === priv.fromPartyId)) {
-          dispatch({ type: 'SET_ERROR', error: `Already have Phase 2 private from Party ${priv.fromPartyId + 1}` });
-          return;
-        }
-        dispatch({ type: 'ADD_PHASE2_PRIV', priv });
-        break;
-      }
-      case 'p3priv': {
-        const priv = decodePhase3Private(text.trim());
-        if (!priv) { dispatch({ type: 'SET_ERROR', error: 'Failed to decode Phase 3 blob' }); return; }
-        if (state.collectedPhase3Priv.some(b => b.fromGeneratorId === priv.fromGeneratorId)) {
-          dispatch({ type: 'SET_ERROR', error: `Already have Phase 3 from generator ${priv.fromGeneratorId + 1}` });
-          return;
-        }
-        dispatch({ type: 'ADD_PHASE3_PRIV', priv });
-        break;
-      }
-      case 'p4': {
-        const broadcast = decodePhase4Broadcast(text.trim());
-        if (!broadcast) { dispatch({ type: 'SET_ERROR', error: 'Failed to decode Phase 4 blob' }); return; }
-        if (state.collectedPhase4.some(b => b.partyId === broadcast.partyId)) {
-          dispatch({ type: 'SET_ERROR', error: `Already have Phase 4 from Party ${broadcast.partyId + 1}` });
-          return;
-        }
-        dispatch({ type: 'ADD_PHASE4', broadcast });
-        break;
-      }
-      case 'frost-r1': {
-        const pkg = decodeFrostRound1(text.trim());
-        if (!pkg) { dispatch({ type: 'SET_ERROR', error: 'Failed to decode FROST Round 1 blob' }); return; }
-        if (state.collectedFrostR1.some(p => p.identifier === pkg.identifier)) {
-          dispatch({ type: 'SET_ERROR', error: `Already have FROST R1 from Party ${frostIdToPartyId(pkg.identifier) + 1}` });
-          return;
-        }
-        dispatch({ type: 'ADD_FROST_R1', pkg });
-        break;
-      }
-      case 'frost-r2': {
-        const pkg = decodeFrostRound2(text.trim());
-        if (!pkg) { dispatch({ type: 'SET_ERROR', error: 'Failed to decode FROST Round 2 blob' }); return; }
-        if (state.collectedFrostR2.some(p => p.sender === pkg.sender)) {
-          dispatch({ type: 'SET_ERROR', error: `Already have FROST R2 from Party ${frostIdToPartyId(pkg.sender) + 1}` });
-          return;
-        }
-        dispatch({ type: 'ADD_FROST_R2', pkg });
-        break;
-      }
-      default:
-        dispatch({ type: 'SET_ERROR', error: `Unexpected blob type "${info.type}" for this step` });
-    }
-    setPasteValue('');
-  }, [sidPrefix, state.myPartyId, state.collectedPhase1, state.collectedPhase2Pub, state.collectedPhase2Priv, state.collectedPhase3Priv, state.collectedPhase4, state.collectedFrostR1, state.collectedFrostR2]);
-
-  // ── Silent paste handler for relay (no error dispatch, returns success boolean) ──
+  // ── Relay blob handler (silent — no error dispatch, returns success boolean) ──
   const handleRelayBlob = useCallback((text: string): boolean => {
     if (!text.trim()) return false;
     const info = identifyBlob(text.trim());
@@ -695,38 +534,6 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
       await relayClientRef.current.broadcast(bytes);
     }
   }, []);
-
-  // ════════════════════════════════════════════════════════════════════
-  // STEP: JOIN
-  // ════════════════════════════════════════════════════════════════════
-
-  const handleCreateSession = useCallback(() => {
-    const sid = generateSessionId();
-    const inst = createDKGInstance(state.level, state.threshold, state.parties);
-    const setup = inst.dkgSetup(sid);
-    dispatch({ type: 'INIT_SESSION', sessionId: sid, instance: inst, bitmasks: setup.bitmasks, holdersOf: setup.holdersOf });
-    dispatch({ type: 'SET_PARTY_ID', partyId: 0 }); // Initiator is party 0
-  }, [state.level, state.threshold, state.parties]);
-
-  const [joinPaste, setJoinPaste] = useState('');
-
-  const handleJoinSession = useCallback(() => {
-    const config = decodeSessionConfig(joinPaste.trim());
-    if (!config) {
-      dispatch({ type: 'SET_ERROR', error: 'Invalid session config blob' });
-      return;
-    }
-    const sid = sessionIdFromHex(config.sid);
-    dispatch({ type: 'SET_PARAMS', threshold: config.t, parties: config.n, level: config.level });
-    const inst = createDKGInstance(config.level, config.t, config.n);
-    const setup = inst.dkgSetup(sid);
-    dispatch({ type: 'INIT_SESSION', sessionId: sid, instance: inst, bitmasks: setup.bitmasks, holdersOf: setup.holdersOf });
-    dispatch({ type: 'SET_PARTY_ID', partyId: 1 }); // Default joiner to party 1 (party 0 is initiator)
-  }, [joinPaste]);
-
-  const sessionBlob = state.sessionId
-    ? encodeSessionConfig(state.threshold, state.parties, state.level, state.sessionId)
-    : null;
 
   // ════════════════════════════════════════════════════════════════════
   // RELAY: Create Session
@@ -876,29 +683,29 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
   // Relay: auto-generate commitment once we enter commit phase
   const relayPhase1Generated = useRef(false);
   useEffect(() => {
-    if (!isRelayMode || state.step !== 'commit' || relayPhase1Generated.current) return;
+    if (state.step !== 'commit' || relayPhase1Generated.current) return;
     if (!state.instance || !state.sessionId) return;
     relayPhase1Generated.current = true;
     // Small delay to let state settle
     setTimeout(() => {
       handleGenerateCommitment();
     }, 100);
-  }, [isRelayMode, state.step, state.instance, state.sessionId, handleGenerateCommitment]);
+  }, [state.step, state.instance, state.sessionId, handleGenerateCommitment]);
 
   // Relay: auto-broadcast Phase 1 blob when generated (await completion)
   const phase1BlobSending = useRef(false);
   useEffect(() => {
-    if (!isRelayMode || !state.myPhase1Blob || phase1BlobSending.current || phase1Sent) return;
+    if (!state.myPhase1Blob || phase1BlobSending.current || phase1Sent) return;
     phase1BlobSending.current = true;
     void (async () => {
       await relaySendBlob(state.myPhase1Blob!);
       setPhase1Sent(true);
     })();
-  }, [isRelayMode, state.myPhase1Blob, phase1Sent, relaySendBlob]);
+  }, [state.myPhase1Blob, phase1Sent, relaySendBlob]);
 
   // Relay: broadcast barrier when own blob sent + all blobs collected
   useEffect(() => {
-    if (!isRelayMode || state.step !== 'commit') return;
+    if (state.step !== 'commit') return;
     if (phase1Ready && phase1Sent && !barrierSentRef.current.commit) {
       barrierSentRef.current.commit = true;
       void relaySendBlob(`BARRIER:commit:${state.myPartyId}`);
@@ -907,15 +714,15 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
         return { ...prev, commit: s };
       });
     }
-  }, [isRelayMode, state.step, phase1Ready, phase1Sent, state.collectedPhase1.length, state.myPartyId, relaySendBlob]);
+  }, [state.step, phase1Ready, phase1Sent, state.collectedPhase1.length, state.myPartyId, relaySendBlob]);
 
   // Relay: auto-advance only when ALL parties have confirmed via barrier
   useEffect(() => {
-    if (!isRelayMode || state.step !== 'commit') return;
+    if (state.step !== 'commit') return;
     if ((barriers.commit?.size ?? 0) >= state.parties) {
       dispatch({ type: 'SET_STEP', step: 'reveal' });
     }
-  }, [isRelayMode, state.step, barriers, state.parties]);
+  }, [state.step, barriers, state.parties]);
 
   // ════════════════════════════════════════════════════════════════════
   // STEP: REVEAL (Phase 2)
@@ -950,7 +757,7 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
   // Relay: auto-send Phase 2 blobs (public broadcast + private to targets, await completion)
   const phase2BlobsSending = useRef(false);
   useEffect(() => {
-    if (!isRelayMode || !state.myPhase2PubBlob || phase2BlobsSending.current || phase2Sent) return;
+    if (!state.myPhase2PubBlob || phase2BlobsSending.current || phase2Sent) return;
     phase2BlobsSending.current = true;
     void (async () => {
       await relaySendBlob(state.myPhase2PubBlob!);
@@ -959,7 +766,7 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
       }
       setPhase2Sent(true);
     })();
-  }, [isRelayMode, state.myPhase2PubBlob, state.myPhase2PrivBlobs, phase2Sent, relaySendBlob]);
+  }, [state.myPhase2PubBlob, state.myPhase2PrivBlobs, phase2Sent, relaySendBlob]);
 
   // Count expected private blobs for Phase 2
   const getExpectedPhase2PrivCount = useCallback((): number => {
@@ -980,7 +787,7 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
 
   // Relay: broadcast barrier when own blobs sent + all blobs collected
   useEffect(() => {
-    if (!isRelayMode || state.step !== 'reveal') return;
+    if (state.step !== 'reveal') return;
     if (phase2Ready && phase2Sent && !barrierSentRef.current.reveal) {
       barrierSentRef.current.reveal = true;
       void relaySendBlob(`BARRIER:reveal:${state.myPartyId}`);
@@ -989,15 +796,15 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
         return { ...prev, reveal: s };
       });
     }
-  }, [isRelayMode, state.step, phase2Ready, phase2Sent, state.collectedPhase2Pub.length, state.collectedPhase2Priv.length, state.myPartyId, relaySendBlob]);
+  }, [state.step, phase2Ready, phase2Sent, state.collectedPhase2Pub.length, state.collectedPhase2Priv.length, state.myPartyId, relaySendBlob]);
 
   // Relay: auto-advance only when ALL parties have confirmed via barrier
   useEffect(() => {
-    if (!isRelayMode || state.step !== 'reveal') return;
+    if (state.step !== 'reveal') return;
     if ((barriers.reveal?.size ?? 0) >= state.parties) {
       dispatch({ type: 'SET_STEP', step: 'masks' });
     }
-  }, [isRelayMode, state.step, barriers, state.parties]);
+  }, [state.step, barriers, state.parties]);
 
   // ════════════════════════════════════════════════════════════════════
   // STEP: MASKS (Phase 2 Finalize + Phase 3)
@@ -1034,7 +841,7 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
   // Relay: auto-send Phase 3 private blobs (await completion)
   const phase3BlobsSending = useRef(false);
   useEffect(() => {
-    if (!isRelayMode || !state.phase2FinalResult || state.myPhase3PrivBlobs.size === 0 || phase3BlobsSending.current || phase3Sent) return;
+    if (!state.phase2FinalResult || state.myPhase3PrivBlobs.size === 0 || phase3BlobsSending.current || phase3Sent) return;
     phase3BlobsSending.current = true;
     void (async () => {
       for (const [targetId, blob] of state.myPhase3PrivBlobs) {
@@ -1042,7 +849,7 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
       }
       setPhase3Sent(true);
     })();
-  }, [isRelayMode, state.phase2FinalResult, state.myPhase3PrivBlobs, phase3Sent, relaySendBlob]);
+  }, [state.phase2FinalResult, state.myPhase3PrivBlobs, phase3Sent, relaySendBlob]);
 
   // Count expected Phase 3 private mask blobs
   const getExpectedPhase3PrivCount = useCallback((): number => {
@@ -1059,7 +866,7 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
 
   // Relay: broadcast barrier when own blobs sent + all blobs collected
   useEffect(() => {
-    if (!isRelayMode || state.step !== 'masks') return;
+    if (state.step !== 'masks') return;
     if (phase3Ready && phase3Sent && !barrierSentRef.current.masks) {
       barrierSentRef.current.masks = true;
       void relaySendBlob(`BARRIER:masks:${state.myPartyId}`);
@@ -1068,15 +875,15 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
         return { ...prev, masks: s };
       });
     }
-  }, [isRelayMode, state.step, phase3Ready, phase3Sent, state.collectedPhase3Priv.length, state.myPartyId, relaySendBlob]);
+  }, [state.step, phase3Ready, phase3Sent, state.collectedPhase3Priv.length, state.myPartyId, relaySendBlob]);
 
   // Relay: auto-advance only when ALL parties have confirmed via barrier
   useEffect(() => {
-    if (!isRelayMode || state.step !== 'masks') return;
+    if (state.step !== 'masks') return;
     if ((barriers.masks?.size ?? 0) >= state.parties) {
       dispatch({ type: 'SET_STEP', step: 'aggregate' });
     }
-  }, [isRelayMode, state.step, barriers, state.parties]);
+  }, [state.step, barriers, state.parties]);
 
   // ════════════════════════════════════════════════════════════════════
   // STEP: AGGREGATE (Phase 4)
@@ -1108,19 +915,19 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
   // Relay: auto-broadcast Phase 4 blob (await completion)
   const phase4BlobSending = useRef(false);
   useEffect(() => {
-    if (!isRelayMode || !state.myPhase4Blob || phase4BlobSending.current || phase4Sent) return;
+    if (!state.myPhase4Blob || phase4BlobSending.current || phase4Sent) return;
     phase4BlobSending.current = true;
     void (async () => {
       await relaySendBlob(state.myPhase4Blob!);
       setPhase4Sent(true);
     })();
-  }, [isRelayMode, state.myPhase4Blob, phase4Sent, relaySendBlob]);
+  }, [state.myPhase4Blob, phase4Sent, relaySendBlob]);
 
   const phase4Ready = state.collectedPhase4.length === state.parties;
 
   // Relay: broadcast barrier when own blob sent + all blobs collected
   useEffect(() => {
-    if (!isRelayMode || state.step !== 'aggregate') return;
+    if (state.step !== 'aggregate') return;
     if (phase4Ready && phase4Sent && !barrierSentRef.current.aggregate) {
       barrierSentRef.current.aggregate = true;
       void relaySendBlob(`BARRIER:aggregate:${state.myPartyId}`);
@@ -1129,15 +936,15 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
         return { ...prev, aggregate: s };
       });
     }
-  }, [isRelayMode, state.step, phase4Ready, phase4Sent, state.collectedPhase4.length, state.myPartyId, relaySendBlob]);
+  }, [state.step, phase4Ready, phase4Sent, state.collectedPhase4.length, state.myPartyId, relaySendBlob]);
 
   // Relay: auto-advance only when ALL parties have confirmed via barrier
   useEffect(() => {
-    if (!isRelayMode || state.step !== 'aggregate') return;
+    if (state.step !== 'aggregate') return;
     if ((barriers.aggregate?.size ?? 0) >= state.parties) {
       dispatch({ type: 'SET_STEP', step: 'frost-commit' });
     }
-  }, [isRelayMode, state.step, barriers, state.parties]);
+  }, [state.step, barriers, state.parties]);
 
   // ════════════════════════════════════════════════════════════════════
   // STEP: FROST-COMMIT (FROST DKG Round 1)
@@ -1164,19 +971,19 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
   // Relay: auto-broadcast FROST R1 blob
   const frostR1BlobSending = useRef(false);
   useEffect(() => {
-    if (!isRelayMode || !state.myFrostR1Blob || frostR1BlobSending.current || frostR1Sent) return;
+    if (!state.myFrostR1Blob || frostR1BlobSending.current || frostR1Sent) return;
     frostR1BlobSending.current = true;
     void (async () => {
       await relaySendBlob(state.myFrostR1Blob!);
       setFrostR1Sent(true);
     })();
-  }, [isRelayMode, state.myFrostR1Blob, frostR1Sent, relaySendBlob]);
+  }, [state.myFrostR1Blob, frostR1Sent, relaySendBlob]);
 
   const frostR1Ready = state.collectedFrostR1.length === state.parties;
 
   // Relay: barrier
   useEffect(() => {
-    if (!isRelayMode || state.step !== 'frost-commit') return;
+    if (state.step !== 'frost-commit') return;
     if (frostR1Ready && frostR1Sent && !barrierSentRef.current['frost-commit']) {
       barrierSentRef.current['frost-commit'] = true;
       void relaySendBlob(`BARRIER:frost-commit:${state.myPartyId}`);
@@ -1185,15 +992,15 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
         return { ...prev, 'frost-commit': s };
       });
     }
-  }, [isRelayMode, state.step, frostR1Ready, frostR1Sent, state.collectedFrostR1.length, state.myPartyId, relaySendBlob]);
+  }, [state.step, frostR1Ready, frostR1Sent, state.collectedFrostR1.length, state.myPartyId, relaySendBlob]);
 
   // Relay: auto-advance
   useEffect(() => {
-    if (!isRelayMode || state.step !== 'frost-commit') return;
+    if (state.step !== 'frost-commit') return;
     if ((barriers['frost-commit']?.size ?? 0) >= state.parties) {
       dispatch({ type: 'SET_STEP', step: 'frost-shares' });
     }
-  }, [isRelayMode, state.step, barriers, state.parties]);
+  }, [state.step, barriers, state.parties]);
 
   // ════════════════════════════════════════════════════════════════════
   // STEP: FROST-SHARES (FROST DKG Round 2)
@@ -1230,7 +1037,7 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
   // Relay: auto-send FROST R2 private blobs
   const frostR2BlobsSending = useRef(false);
   useEffect(() => {
-    if (!isRelayMode || state.myFrostR2Blobs.size === 0 || frostR2BlobsSending.current || frostR2Sent) return;
+    if (state.myFrostR2Blobs.size === 0 || frostR2BlobsSending.current || frostR2Sent) return;
     frostR2BlobsSending.current = true;
     void (async () => {
       for (const [targetId, blob] of state.myFrostR2Blobs) {
@@ -1238,14 +1045,14 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
       }
       setFrostR2Sent(true);
     })();
-  }, [isRelayMode, state.myFrostR2Blobs, frostR2Sent, relaySendBlob]);
+  }, [state.myFrostR2Blobs, frostR2Sent, relaySendBlob]);
 
   // Expected: one Round2Package from each other party
   const frostR2Ready = state.collectedFrostR2.length === state.parties - 1;
 
   // Relay: barrier
   useEffect(() => {
-    if (!isRelayMode || state.step !== 'frost-shares') return;
+    if (state.step !== 'frost-shares') return;
     if (frostR2Ready && frostR2Sent && !barrierSentRef.current['frost-shares']) {
       barrierSentRef.current['frost-shares'] = true;
       void relaySendBlob(`BARRIER:frost-shares:${state.myPartyId}`);
@@ -1254,15 +1061,15 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
         return { ...prev, 'frost-shares': s };
       });
     }
-  }, [isRelayMode, state.step, frostR2Ready, frostR2Sent, state.collectedFrostR2.length, state.myPartyId, relaySendBlob]);
+  }, [state.step, frostR2Ready, frostR2Sent, state.collectedFrostR2.length, state.myPartyId, relaySendBlob]);
 
   // Relay: auto-advance
   useEffect(() => {
-    if (!isRelayMode || state.step !== 'frost-shares') return;
+    if (state.step !== 'frost-shares') return;
     if ((barriers['frost-shares']?.size ?? 0) >= state.parties) {
       dispatch({ type: 'SET_STEP', step: 'frost-link' });
     }
-  }, [isRelayMode, state.step, barriers, state.parties]);
+  }, [state.step, barriers, state.parties]);
 
   // ════════════════════════════════════════════════════════════════════
   // STEP: FROST-LINK (FROST-sign the OPNet key-link message)
@@ -1489,67 +1296,39 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
         <div className="warning" style={{ marginBottom: 16 }}>{state.error}</div>
       )}
 
-      {/* ═══════ MODE SELECTOR (before join) ═══════ */}
-      {state.step === 'join' && transportMode === 'choose' && (
-        <div className="card">
-          <h2>Start Ceremony</h2>
-          <p>Choose how parties will communicate during the DKG ceremony.</p>
-
-          <div className="form-row" style={{ marginBottom: 16 }}>
-            <label>
-              Session Code
-              <input
-                type="text"
-                autoFocus
-                placeholder="Paste session code to join"
-                maxLength={6}
-                value={relayJoinCode}
-                onChange={e => {
-                  const val = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
-                  setRelayJoinCode(val);
-                  setRelayError('');
-                  if (val.length >= 6) {
-                    setTransportMode('relay-join');
-                  }
-                }}
-                style={{ fontFamily: 'monospace', fontSize: 18, letterSpacing: '0.15em', textTransform: 'uppercase', textAlign: 'center' }}
-              />
-            </label>
-          </div>
-
-          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--white-dim)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-            Or start a new session
-          </div>
-          <button
-            className="btn btn-primary btn-full"
-            style={{ marginBottom: 16 }}
-            onClick={() => setTransportMode('relay-create')}
-          >
-            Create Session
-          </button>
-
-          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--white-dim)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-            Offline (Manual)
-          </div>
-          <button
-            className="btn btn-secondary btn-full"
-            onClick={() => setTransportMode('offline')}
-          >
-            Offline Mode
-          </button>
-          <p style={{ fontSize: 13, color: 'var(--white-dim)', marginTop: 8 }}>
-            Copy and paste blobs manually between parties.
-          </p>
-        </div>
-      )}
-
       {/* ═══════ RELAY-CREATE: setup ═══════ */}
       {state.step === 'join' && transportMode === 'relay-create' && (
         <div className="card">
-          <h2>Create Relay Session</h2>
+          <h2>Start Ceremony</h2>
 
           {!relaySessionCode && (
             <>
+              <div className="form-row" style={{ marginBottom: 16 }}>
+                <label>
+                  Session Code
+                  <input
+                    type="text"
+                    autoFocus
+                    placeholder="Paste session code to join"
+                    maxLength={6}
+                    value={relayJoinCode}
+                    onChange={e => {
+                      const val = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                      setRelayJoinCode(val);
+                      setRelayError('');
+                      if (val.length >= 6) {
+                        setTransportMode('relay-join');
+                      }
+                    }}
+                    style={{ fontFamily: 'monospace', fontSize: 18, letterSpacing: '0.15em', textTransform: 'uppercase', textAlign: 'center' }}
+                  />
+                </label>
+              </div>
+
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--white-dim)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Or create a new session
+              </div>
+
               <div className="form-row">
                 <label>
                   Threshold (T)
@@ -1644,26 +1423,27 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
             <div className="warning" style={{ marginTop: 12 }}>{relayError}</div>
           )}
 
-          <button
-            className="btn btn-secondary btn-full"
-            style={{ marginTop: 16 }}
-            onClick={() => {
-              if (relayClientRef.current) {
-                relayClientRef.current.close();
-                relayClientRef.current = null;
-              }
-              setRelayClient(null);
-              setRelaySessionCode('');
-              setRelaySessionUrl('');
-              setRelayReady(false);
-              setRelayFingerprint('');
-              setRelayStatus('');
-              setRelayError('');
-              setTransportMode('choose');
-            }}
-          >
-            Back
-          </button>
+          {relaySessionCode && (
+            <button
+              className="btn btn-secondary btn-full"
+              style={{ marginTop: 16 }}
+              onClick={() => {
+                if (relayClientRef.current) {
+                  relayClientRef.current.close();
+                  relayClientRef.current = null;
+                }
+                setRelayClient(null);
+                setRelaySessionCode('');
+                setRelaySessionUrl('');
+                setRelayReady(false);
+                setRelayFingerprint('');
+                setRelayStatus('');
+                setRelayError('');
+              }}
+            >
+              Cancel
+            </button>
+          )}
         </div>
       )}
 
@@ -1753,144 +1533,8 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
               setRelayStatus('');
               setRelayError('');
               setRelayJoinCode('');
-              setTransportMode('choose');
+              setTransportMode('relay-create');
             }}
-          >
-            Back
-          </button>
-        </div>
-      )}
-
-      {/* ═══════ STEP: JOIN (offline mode) ═══════ */}
-      {state.step === 'join' && transportMode === 'offline' && (
-        <div className="card">
-          <h2>Join Ceremony</h2>
-
-          {/* Role selector */}
-          <div className="form-row" style={{ marginBottom: 24 }}>
-            <label>
-              Role
-              <select
-                value={state.role}
-                onChange={e => dispatch({ type: 'SET_ROLE', role: e.target.value as Role })}
-              >
-                <option value="initiator">Initiator (create new session)</option>
-                <option value="joiner">Joiner (paste session config)</option>
-              </select>
-            </label>
-          </div>
-
-          {state.role === 'initiator' && (
-            <>
-              <div className="form-row">
-                <label>
-                  Threshold (T)
-                  <select
-                    value={state.threshold}
-                    onChange={e => {
-                      const t = Number(e.target.value);
-                      dispatch({ type: 'SET_PARAMS', threshold: t, parties: Math.max(t, state.parties), level: state.level });
-                    }}
-                  >
-                    {[2, 3, 4, 5].map(n => <option key={n} value={n}>{n}</option>)}
-                  </select>
-                </label>
-                <label>
-                  Parties (N)
-                  <select
-                    value={state.parties}
-                    onChange={e => dispatch({ type: 'SET_PARAMS', threshold: state.threshold, parties: Number(e.target.value), level: state.level })}
-                  >
-                    {[2, 3, 4, 5, 6].filter(n => n >= state.threshold).map(n => (
-                      <option key={n} value={n}>{n}</option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-              <p>
-                Dealerless DKG: no single party generates or sees all key material.
-                Each party runs this page independently.
-              </p>
-              {!state.sessionId && (
-                <button className="btn btn-primary btn-full" onClick={handleCreateSession}>
-                  Create Session
-                </button>
-              )}
-              {state.sessionId && sessionBlob && (
-                <>
-                  <BlobOutput blob={sessionBlob} label="Session Config" onCopy={copyToClipboard} copiedLabel={copied} />
-                  <p style={{ fontSize: 13, color: 'var(--white-dim)' }}>
-                    Share this blob with all {state.parties - 1} other parties.
-                    You are Party 1 (index 0).
-                  </p>
-                  <button
-                    className="btn btn-primary btn-full"
-                    onClick={() => dispatch({ type: 'SET_STEP', step: 'commit' })}
-                  >
-                    Continue to Commit Phase
-                  </button>
-                </>
-              )}
-            </>
-          )}
-
-          {state.role === 'joiner' && (
-            <>
-              <textarea
-                className="blob-textarea"
-                placeholder="Paste the session config blob from the initiator..."
-                value={joinPaste}
-                onChange={e => setJoinPaste(e.target.value)}
-                rows={3}
-              />
-              {!state.sessionId && (
-                <button
-                  className="btn btn-secondary btn-full"
-                  style={{ marginTop: 8 }}
-                  onClick={handleJoinSession}
-                  disabled={!joinPaste.trim()}
-                >
-                  Load Session
-                </button>
-              )}
-              {state.sessionId && (
-                <>
-                  <div className="success-box" style={{ marginTop: 12 }}>
-                    Session loaded: {state.threshold}-of-{state.parties}, ML-DSA-{state.level}
-                  </div>
-                  <div className="form-row">
-                    <label>
-                      I am Party
-                      <select
-                        value={state.myPartyId}
-                        onChange={e => dispatch({ type: 'SET_PARTY_ID', partyId: Number(e.target.value) })}
-                      >
-                        {Array.from({ length: state.parties }, (_, i) => i)
-                          .filter(i => i !== 0)
-                          .map(i => (
-                            <option key={i} value={i}>Party {i + 1}</option>
-                          ))}
-                      </select>
-                    </label>
-                  </div>
-                  <p style={{ fontSize: 12, color: 'var(--white-dim)' }}>
-                    Coordinate with other parties to ensure each selects a unique party number.
-                  </p>
-                  <button
-                    className="btn btn-primary btn-full"
-                    onClick={() => dispatch({ type: 'SET_STEP', step: 'commit' })}
-                  >
-                    Continue to Commit Phase
-                  </button>
-                </>
-              )}
-            </>
-          )}
-
-          <button
-            className="btn btn-secondary btn-full"
-            style={{ marginTop: 16 }}
-            onClick={() => setTransportMode('choose')}
           >
             Back
           </button>
@@ -1901,60 +1545,21 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
       {state.step === 'commit' && (
         <div className="card">
           <h2>Phase 1: Commit</h2>
-          {isRelayMode ? (
-            <p>Generating and exchanging commitments via relay...</p>
-          ) : (
-            <p>Generate your cryptographic commitment and share it with all parties.</p>
-          )}
+          <p>Generating and exchanging commitments via relay...</p>
 
-          {!state.myPhase1Blob && !isRelayMode && (
-            <button className="btn btn-primary btn-full" onClick={handleGenerateCommitment}>
-              Generate Commitment
-            </button>
-          )}
-
-          {/* Relay mode: progress indicator */}
-          {isRelayMode && (
-            <>
-              <PartyTracker
-                collected={state.collectedPhase1.map(b => b.partyId)}
-                total={state.parties}
-                myPartyId={state.myPartyId}
-                label="Commitments"
-              />
-              {!phase1Ready && (
-                <RelayPhaseProgress
-                  phase="Phase 1"
-                  collected={state.collectedPhase1.length}
-                  total={state.parties}
-                  label="commitments received"
-                />
-              )}
-            </>
-          )}
-
-          {/* Offline mode: full blob exchange UI */}
-          {state.myPhase1Blob && !isRelayMode && (
-            <>
-              <BlobOutput blob={state.myPhase1Blob} label="My Phase 1 Commitment" onCopy={copyToClipboard} copiedLabel={copied} />
-              <PartyTracker
-                collected={state.collectedPhase1.map(b => b.partyId)}
-                total={state.parties}
-                myPartyId={state.myPartyId}
-                label="Commitments"
-              />
-              <PasteArea value={pasteValue} onChange={setPasteValue} onProcess={handlePaste} />
-              <button
-                className="btn btn-primary btn-full"
-                style={{ marginTop: 16 }}
-                onClick={() => dispatch({ type: 'SET_STEP', step: 'reveal' })}
-                disabled={!phase1Ready}
-              >
-                {phase1Ready
-                  ? 'Continue to Reveal Phase'
-                  : `Waiting for ${state.parties - state.collectedPhase1.length} more commitment(s)`}
-              </button>
-            </>
+          <PartyTracker
+            collected={state.collectedPhase1.map(b => b.partyId)}
+            total={state.parties}
+            myPartyId={state.myPartyId}
+            label="Commitments"
+          />
+          {!phase1Ready && (
+            <RelayPhaseProgress
+              phase="Phase 1"
+              collected={state.collectedPhase1.length}
+              total={state.parties}
+              label="commitments received"
+            />
           )}
         </div>
       )}
@@ -1963,11 +1568,7 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
       {state.step === 'reveal' && (
         <div className="card">
           <h2>Phase 2: Reveal</h2>
-          {isRelayMode ? (
-            <p>Exchanging reveals via relay...</p>
-          ) : (
-            <p>Share your public reveal with everyone, and private reveals with specified parties.</p>
-          )}
+          <p>Exchanging reveals via relay...</p>
 
           {!state.myPhase2PubBlob && (
             <div style={{ textAlign: 'center', padding: 20 }}>
@@ -1976,7 +1577,7 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
             </div>
           )}
 
-          {state.myPhase2PubBlob && isRelayMode && (
+          {state.myPhase2PubBlob && (
             <>
               <PartyTracker
                 collected={state.collectedPhase2Pub.map(b => b.partyId)}
@@ -1997,47 +1598,6 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
               )}
             </>
           )}
-
-          {state.myPhase2PubBlob && !isRelayMode && (
-            <>
-              <BlobOutput blob={state.myPhase2PubBlob} label="Public Reveal (send to everyone)" onCopy={copyToClipboard} copiedLabel={copied} />
-
-              {[...state.myPhase2PrivBlobs.entries()].map(([targetId, blob]) => (
-                <BlobOutput
-                  key={targetId}
-                  blob={blob}
-                  label={`Private for Party ${targetId + 1}`}
-                  isPrivate
-                  targetParty={targetId}
-                  onCopy={copyToClipboard}
-                  copiedLabel={copied}
-                />
-              ))}
-
-              <PartyTracker
-                collected={state.collectedPhase2Pub.map(b => b.partyId)}
-                total={state.parties}
-                myPartyId={state.myPartyId}
-                label="Public reveals"
-              />
-              <div className="party-tracker" style={{ marginTop: 4 }}>
-                <span className="tracker-label">Private reveals: {state.collectedPhase2Priv.length}/{getExpectedPhase2PrivCount()}</span>
-              </div>
-
-              <PasteArea value={pasteValue} onChange={setPasteValue} onProcess={handlePaste} />
-
-              <button
-                className="btn btn-primary btn-full"
-                style={{ marginTop: 16 }}
-                onClick={() => dispatch({ type: 'SET_STEP', step: 'masks' })}
-                disabled={!phase2Ready}
-              >
-                {phase2Ready
-                  ? 'Continue to Masks Phase'
-                  : 'Waiting for more reveals...'}
-              </button>
-            </>
-          )}
         </div>
       )}
 
@@ -2045,11 +1605,7 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
       {state.step === 'masks' && (
         <div className="card">
           <h2>Phase 3: Masks</h2>
-          {isRelayMode ? (
-            <p>Exchanging mask blobs via relay...</p>
-          ) : (
-            <p>Mask generation and distribution. Some parties generate masks for specific bitmask groups.</p>
-          )}
+          <p>Exchanging mask blobs via relay...</p>
 
           {!state.phase2FinalResult && (
             <div style={{ textAlign: 'center', padding: 20 }}>
@@ -2058,7 +1614,7 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
             </div>
           )}
 
-          {state.phase2FinalResult && isRelayMode && (
+          {state.phase2FinalResult && (
             <>
               <div className="party-tracker" style={{ marginTop: 12 }}>
                 <span className="tracker-label">
@@ -2080,74 +1636,6 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
               )}
             </>
           )}
-
-          {state.phase2FinalResult && !isRelayMode && (
-            <>
-              {/* Generator assignments */}
-              <div className="generator-info">
-                <strong>Generator assignments:</strong>
-                {[...state.phase2FinalResult.generatorAssignment.entries()].slice(0, 8).map(([bitmask, genId]) => (
-                  <div key={bitmask} style={{ fontSize: 12, color: 'var(--white-dim)' }}>
-                    Bitmask {bitmask.toString(2).padStart(state.parties, '0')}: Party {genId + 1}
-                    {genId === state.myPartyId ? ' (you)' : ''}
-                  </div>
-                ))}
-                {state.phase2FinalResult.generatorAssignment.size > 8 && (
-                  <div style={{ fontSize: 12, color: 'var(--white-dim)' }}>
-                    ...and {state.phase2FinalResult.generatorAssignment.size - 8} more
-                  </div>
-                )}
-              </div>
-
-              {/* Private mask blobs to distribute */}
-              {state.myPhase3PrivBlobs.size > 0 && (
-                <>
-                  <p style={{ marginTop: 16 }}>
-                    You are a generator for some bitmasks. Send these private blobs:
-                  </p>
-                  {[...state.myPhase3PrivBlobs.entries()].map(([targetId, blob]) => (
-                    <BlobOutput
-                      key={targetId}
-                      blob={blob}
-                      label={`Masks for Party ${targetId + 1}`}
-                      isPrivate
-                      targetParty={targetId}
-                      onCopy={copyToClipboard}
-                      copiedLabel={copied}
-                    />
-                  ))}
-                </>
-              )}
-
-              {state.myPhase3PrivBlobs.size === 0 && getExpectedPhase3PrivCount() === 0 && (
-                <div className="success-box">
-                  No mask exchange needed for your party in this round.
-                </div>
-              )}
-
-              {getExpectedPhase3PrivCount() > 0 && (
-                <>
-                  <div className="party-tracker" style={{ marginTop: 12 }}>
-                    <span className="tracker-label">
-                      Received masks: {state.collectedPhase3Priv.length}/{getExpectedPhase3PrivCount()}
-                    </span>
-                  </div>
-                  <PasteArea value={pasteValue} onChange={setPasteValue} onProcess={handlePaste} />
-                </>
-              )}
-
-              <button
-                className="btn btn-primary btn-full"
-                style={{ marginTop: 16 }}
-                onClick={() => dispatch({ type: 'SET_STEP', step: 'aggregate' })}
-                disabled={!phase3Ready}
-              >
-                {phase3Ready
-                  ? 'Continue to Aggregate Phase'
-                  : 'Waiting for mask blobs...'}
-              </button>
-            </>
-          )}
         </div>
       )}
 
@@ -2155,11 +1643,7 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
       {state.step === 'aggregate' && (
         <div className="card">
           <h2>Phase 4: Aggregate</h2>
-          {isRelayMode ? (
-            <p>Exchanging aggregates via relay...</p>
-          ) : (
-            <p>Each party broadcasts their aggregate. Collect all to derive the shared public key.</p>
-          )}
+          <p>Exchanging aggregates via relay...</p>
 
           {!state.myPhase4Blob && (
             <div style={{ textAlign: 'center', padding: 20 }}>
@@ -2168,7 +1652,7 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
             </div>
           )}
 
-          {state.myPhase4Blob && isRelayMode && (
+          {state.myPhase4Blob && (
             <>
               <PartyTracker
                 collected={state.collectedPhase4.map(b => b.partyId)}
@@ -2186,32 +1670,6 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
               )}
             </>
           )}
-
-          {state.myPhase4Blob && !isRelayMode && (
-            <>
-              <BlobOutput blob={state.myPhase4Blob} label="My Aggregate (send to everyone)" onCopy={copyToClipboard} copiedLabel={copied} />
-
-              <PartyTracker
-                collected={state.collectedPhase4.map(b => b.partyId)}
-                total={state.parties}
-                myPartyId={state.myPartyId}
-                label="Aggregates"
-              />
-
-              <PasteArea value={pasteValue} onChange={setPasteValue} onProcess={handlePaste} />
-
-              <button
-                className="btn btn-primary btn-full"
-                style={{ marginTop: 16 }}
-                onClick={() => dispatch({ type: 'SET_STEP', step: 'frost-commit' })}
-                disabled={!phase4Ready}
-              >
-                {phase4Ready
-                  ? 'Continue to FROST Key Generation'
-                  : `Waiting for ${state.parties - state.collectedPhase4.length} more aggregate(s)`}
-              </button>
-            </>
-          )}
         </div>
       )}
 
@@ -2219,11 +1677,7 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
       {state.step === 'frost-commit' && (
         <div className="card">
           <h2>FROST Round 1: Commitments</h2>
-          {isRelayMode ? (
-            <p>Generating and exchanging FROST key commitments via relay...</p>
-          ) : (
-            <p>Each party generates FROST key material and broadcasts their commitment.</p>
-          )}
+          <p>Generating and exchanging FROST key commitments via relay...</p>
 
           {!state.myFrostR1Blob && (
             <div style={{ textAlign: 'center', padding: 20 }}>
@@ -2232,7 +1686,7 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
             </div>
           )}
 
-          {state.myFrostR1Blob && isRelayMode && (
+          {state.myFrostR1Blob && (
             <>
               <PartyTracker
                 collected={state.collectedFrostR1.map(p => frostIdToPartyId(p.identifier))}
@@ -2251,28 +1705,6 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
             </>
           )}
 
-          {state.myFrostR1Blob && !isRelayMode && (
-            <>
-              <BlobOutput blob={state.myFrostR1Blob} label="My FROST Commitment (send to everyone)" onCopy={copyToClipboard} copiedLabel={copied} />
-              <PartyTracker
-                collected={state.collectedFrostR1.map(p => frostIdToPartyId(p.identifier))}
-                total={state.parties}
-                myPartyId={state.myPartyId}
-                label="FROST Commitments"
-              />
-              <PasteArea value={pasteValue} onChange={setPasteValue} onProcess={handlePaste} />
-              <button
-                className="btn btn-primary btn-full"
-                style={{ marginTop: 16 }}
-                onClick={() => dispatch({ type: 'SET_STEP', step: 'frost-shares' })}
-                disabled={!frostR1Ready}
-              >
-                {frostR1Ready
-                  ? 'Continue to FROST Share Distribution'
-                  : `Waiting for ${state.parties - state.collectedFrostR1.length} more commitment(s)`}
-              </button>
-            </>
-          )}
         </div>
       )}
 
@@ -2280,11 +1712,7 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
       {state.step === 'frost-shares' && (
         <div className="card">
           <h2>FROST Round 2: Share Distribution</h2>
-          {isRelayMode ? (
-            <p>Exchanging FROST secret shares via relay...</p>
-          ) : (
-            <p>Send each party their private FROST share. These are secret — share only with the named recipient.</p>
-          )}
+          <p>Exchanging FROST secret shares via relay...</p>
 
           {state.myFrostR2Blobs.size === 0 && (
             <div style={{ textAlign: 'center', padding: 20 }}>
@@ -2293,7 +1721,7 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
             </div>
           )}
 
-          {state.myFrostR2Blobs.size > 0 && isRelayMode && (
+          {state.myFrostR2Blobs.size > 0 && (
             <>
               <PartyTracker
                 collected={state.collectedFrostR2.map(p => frostIdToPartyId(p.sender))}
@@ -2309,39 +1737,6 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
                   label="shares received"
                 />
               )}
-            </>
-          )}
-
-          {state.myFrostR2Blobs.size > 0 && !isRelayMode && (
-            <>
-              {[...state.myFrostR2Blobs.entries()].map(([targetId, blob]) => (
-                <BlobOutput
-                  key={targetId}
-                  blob={blob}
-                  label={`FROST Share for Party ${targetId + 1}`}
-                  isPrivate
-                  targetParty={targetId}
-                  onCopy={copyToClipboard}
-                  copiedLabel={copied}
-                />
-              ))}
-              <PartyTracker
-                collected={state.collectedFrostR2.map(p => frostIdToPartyId(p.sender))}
-                total={state.parties}
-                myPartyId={state.myPartyId}
-                label="FROST Shares"
-              />
-              <PasteArea value={pasteValue} onChange={setPasteValue} onProcess={handlePaste} />
-              <button
-                className="btn btn-primary btn-full"
-                style={{ marginTop: 16 }}
-                onClick={() => dispatch({ type: 'SET_STEP', step: 'frost-link' })}
-                disabled={!frostR2Ready}
-              >
-                {frostR2Ready
-                  ? 'Key Link'
-                  : `Waiting for ${state.parties - 1 - state.collectedFrostR2.length} more share(s)`}
-              </button>
             </>
           )}
         </div>
@@ -2383,7 +1778,7 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
                 access to the full secret keys.
               </div>
 
-              {isRelayMode && relayFingerprint && (
+              {relayFingerprint && (
                 <div style={{ marginBottom: 16 }}>
                   <span style={{ fontSize: 12, color: 'var(--white-dim)' }}>Session Fingerprint</span>
                   <div style={{ fontFamily: 'monospace', fontSize: 14, fontWeight: 600 }}>{relayFingerprint}</div>

@@ -28,10 +28,7 @@ From the user's perspective, steps 3-4 are one uninterrupted flow over the same 
 
 ### Blob exchange
 
-Both DKG and signing support two modes:
-
-- **Relay mode** — an encrypted WebSocket relay routes E2E encrypted messages between parties in real time. The relay is built into the container.
-- **Offline mode** — parties manually copy/paste blobs (air-gapped friendly).
+All blob exchange happens via an **encrypted WebSocket relay** built into the container. Messages are E2E encrypted — the relay server only forwards ciphertext.
 
 ## Install
 
@@ -232,14 +229,6 @@ The Vite dev server proxies `/api` and `/ws` to the backend on port 8080.
 
 - Node.js 20+
 - Go 1.23+
-
-### Offline build
-
-```bash
-npm run build:offline
-```
-
-Produces a self-contained HTML file in `dist-offline/` that runs from `file://` with zero network dependency. Useful for air-gapped DKG ceremonies.
 
 ## Security
 
