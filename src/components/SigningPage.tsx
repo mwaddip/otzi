@@ -843,6 +843,18 @@ export function SigningPage({ onSettings, prefill, onPrefillConsumed, initialSes
           </button>
         </div>
       )}
+      {/* Result phase — joiner (no local tx data, initiator broadcasts) */}
+      {phase === 'result' && !btcTxSummary && !signature && (
+        <div className="card">
+          <h2>Signing Complete</h2>
+          <div className="success-box">
+            Threshold signing complete. The initiator session will broadcast the transaction.
+          </div>
+          <button className="btn btn-secondary btn-full" style={{ marginTop: 12 }} onClick={handleReset}>
+            New Transaction
+          </button>
+        </div>
+      )}
     </div>
   );
 }
