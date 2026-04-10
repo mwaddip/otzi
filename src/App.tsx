@@ -13,10 +13,9 @@ import './styles/ceremony.css';
 
 type View = 'loading' | 'wizard' | 'unlock' | 'walletAuth' | 'dkg' | 'signing' | 'settings';
 
-export interface SendPrefill {
-  contractAddress: string;
-  method: string;
-}
+export type SendPrefill =
+  | { type: 'contract'; contractAddress: string; method: string }
+  | { type: 'btc' };
 
 /** Inline SVG icon — Ötzi segmented Ö (single character for favicons/small contexts) */
 export function OtziLogo({ size = 32, className }: { size?: number; className?: string }) {

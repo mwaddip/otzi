@@ -38,7 +38,7 @@ export function MessageBuilder({ contracts, onMessageBuilt, prefill, onPrefillCo
 
   // Handle prefill from Settings "send" link
   useEffect(() => {
-    if (!prefill) return;
+    if (!prefill || prefill.type !== 'contract') return;
     const isConfigured = contracts.some(c => c.address === prefill.contractAddress);
     if (isConfigured) {
       setMode('configured');

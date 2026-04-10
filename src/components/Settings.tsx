@@ -192,7 +192,7 @@ export function Settings({ onBack, onSend }: Props) {
                     <span>{t.symbol}</span>
                     <button
                       style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 14, padding: 0, lineHeight: 1 }}
-                      onClick={() => onSend({ contractAddress: t.address, method: 'transfer' })}
+                      onClick={() => onSend({ type: 'contract', contractAddress: t.address, method: 'transfer' })}
                       title="Send"
                     >
                       ↗
