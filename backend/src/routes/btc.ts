@@ -1,6 +1,7 @@
 import { Router, type Request, type Response, type RequestHandler } from 'express';
 import { randomBytes } from 'node:crypto';
 import { Transaction, payments, address as btcAddress, toXOnly } from '@btc-vision/bitcoin';
+import { schnorr } from '@noble/curves/secp256k1.js';
 import { ConfigStore } from '../lib/config-store.js';
 import { getProvider, getNetwork } from '../lib/opnet-client.js';
 
@@ -216,17 +217,35 @@ export function btcRoutes(store: ConfigStore, requireUser: RequestHandler): Rout
         }
       }
 
-      // Parse cached tx and inject FROST signatures as key-path witness
+      // Verify FROST signatures against sighashes before injecting
+      const config = store.get();
+      const untweakedPubKey = Buffer.from(config.permafrost!.frostUntweakedAggregateKey!, 'hex');
+      const xOnlyPub = toXOnly(untweakedPubKey as never);
+
+      for (const fs of frostSignatures) {
+        const sighash = cached.sighashes.find(s => s.index === fs.index);
+        if (!sighash) {
+          broadcastLock.delete(challengeToken);
+          res.status(400).json({ error: `No sighash for input index ${fs.index}` });
+          return;
+        }
+        const sigBytes = Buffer.from(fs.signature, 'hex');
+        const msgBytes = Buffer.from(sighash.hash, 'hex');
+        if (!schnorr.verify(sigBytes, msgBytes, xOnlyPub)) {
+          broadcastLock.delete(challengeToken);
+          res.status(400).json({ error: `BIP340 verification failed for input ${fs.index} — FROST ceremony may need to be repeated` });
+          return;
+        }
+      }
+
+      // Parse cached tx and inject verified FROST signatures as key-path witness
       const tx = Transaction.fromHex(cached.txHex);
       for (const fs of frostSignatures) {
         const sig = Buffer.from(fs.signature, 'hex');
-        // Key-path Taproot witness: single element = 64-byte Schnorr signature
         tx.setWitness(fs.index, [sig]);
       }
 
       const rawTx = tx.toHex();
-
-      const config = store.get();
       let txid: string;
 
       if (config.network === 'testnet') {

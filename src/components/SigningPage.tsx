@@ -7,6 +7,7 @@ import { RelayClient } from '../lib/relay';
 import { getConfig, getWalletBalance, broadcastTx, getSighash, broadcastFrost, broadcastBtcSend, getBroadcastStatus, getSessionRole, hasAdminToken, getActiveSessions, RELAY_URL } from '../lib/api';
 import { BtcSend, type BtcTxSummary } from './BtcSend';
 import { toHex } from '../lib/threshold';
+import { sessionFingerprint } from '../lib/relay-crypto';
 import type { VaultConfig } from '../lib/vault-types';
 import type { ManifestConfig } from '../lib/manifest-types';
 import type { DecryptedShare } from '../lib/share-crypto';
@@ -59,6 +60,7 @@ export function SigningPage({ onSettings, prefill, onPrefillConsumed, initialSes
   const [relayPartyCount, setRelayPartyCount] = useState(0);
   const [relayPartyTotal, setRelayPartyTotal] = useState(0);
   const [relayReady, setRelayReady] = useState(false);
+  const [relayFingerprint, setRelayFingerprint] = useState<string | null>(null);
   const [share, setShare] = useState<DecryptedShare | null>(null);
   const relayClientRef = useRef<RelayClient | null>(null);
   const autoJoinRef = useRef(false);
@@ -382,6 +384,7 @@ export function SigningPage({ onSettings, prefill, onPrefillConsumed, initialSes
     setBtcSendMode(false);
     setBtcTxSummary(null);
     setBtcChallengeToken(null);
+    setRelayFingerprint(null);
   };
 
   // ── Relay: Create Session ──
@@ -398,9 +401,10 @@ export function SigningPage({ onSettings, prefill, onPrefillConsumed, initialSes
       setRelayPartyTotal(total);
     });
 
-    client.on('ready', () => {
+    client.on('ready', (pubkeys) => {
       setRelayReady(true);
       setRelayState('ready');
+      sessionFingerprint(pubkeys as Map<number, Uint8Array>).then(setRelayFingerprint).catch(() => {});
     });
 
     client.on('error', (errMsg) => {
@@ -437,9 +441,10 @@ export function SigningPage({ onSettings, prefill, onPrefillConsumed, initialSes
       setRelayPartyTotal(total);
     });
 
-    client.on('ready', () => {
+    client.on('ready', (pubkeys) => {
       setRelayReady(true);
       setRelayState('ready');
+      sessionFingerprint(pubkeys as Map<number, Uint8Array>).then(setRelayFingerprint).catch(() => {});
     });
 
     client.on('error', (errMsg) => {
@@ -480,6 +485,14 @@ export function SigningPage({ onSettings, prefill, onPrefillConsumed, initialSes
             {config.permafrost ? ` · ${config.permafrost.threshold}-of-${config.permafrost.parties}` : ''}
           </p>
         </div>
+        {relayFingerprint && (
+          <div
+            style={{ fontSize: 11, fontFamily: 'monospace', color: 'var(--gray-light)', letterSpacing: 2, textAlign: 'center' }}
+            title="Session fingerprint — verify this matches on all parties to confirm E2E encryption"
+          >
+            {relayFingerprint}
+          </div>
+        )}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           {balance !== null && (
             <div

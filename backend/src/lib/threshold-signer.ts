@@ -33,8 +33,7 @@ export class ThresholdMLDSASigner implements QuantumBIP32Interface {
   }
 
   verify(_hash: Uint8Array, _signature: Uint8Array): boolean {
-    // Not used during sendTransaction — return true
-    return true;
+    throw new Error('ThresholdMLDSASigner.verify() not implemented — SDK should not call this during sendTransaction');
   }
 
   isNeutered(): boolean {

@@ -1,6 +1,6 @@
 import { randomBytes, createCipheriv, createDecipheriv, pbkdf2Sync } from 'node:crypto';
 
-const PBKDF2_ITERATIONS = 100_000;
+const PBKDF2_ITERATIONS = 600_000;
 const SALT_BYTES = 16;
 const IV_BYTES = 12;
 const KEY_BYTES = 32;

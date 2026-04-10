@@ -264,7 +264,7 @@ export function decodePhase3Private(blob: string): DKGPhase3Private | null {
 // ── Phase 4: Aggregate broadcast ──
 
 export function encodePhase4Broadcast(broadcast: DKGPhase4Broadcast, sessionId: Uint8Array): string {
-  // Layout: 1B partyId, 1B numPolys, per poly: 256×4B int32 LE
+  // Layout: 1B partyId, 1B numPolys, per poly: 256×4B int32 LE, then 32B SHA-256 checksum
   const numPolys = broadcast.aggregate.length;
   const buf = new Uint8Array(2 + numPolys * N_COEFFS * 4);
   let pos = 0;
@@ -277,20 +277,32 @@ export function encodePhase4Broadcast(broadcast: DKGPhase4Broadcast, sessionId: 
     }
     pos += N_COEFFS * 4;
   }
-  return encodeEnvelope('p4', broadcast.partyId, -1, sessionId, buf);
+  const checksum = sha256(buf);
+  const withChecksum = new Uint8Array(buf.length + 32);
+  withChecksum.set(buf);
+  withChecksum.set(checksum, buf.length);
+  return encodeEnvelope('p4', broadcast.partyId, -1, sessionId, withChecksum);
 }
 
 export function decodePhase4Broadcast(blob: string): DKGPhase4Broadcast | null {
   const env = decodeEnvelope(blob);
   if (!env || env.type !== 'p4') return null;
-  const data = fromHex(env.data);
+  const raw = fromHex(env.data);
+  if (raw.length < 32) return null;
+  // Verify SHA-256 checksum
+  const payload = raw.slice(0, raw.length - 32);
+  const receivedChecksum = raw.slice(raw.length - 32);
+  if (!equalBytes(sha256(payload), receivedChecksum)) {
+    console.error('Phase 4 blob integrity check failed');
+    return null;
+  }
   let pos = 0;
-  const partyId = data[pos++]!;
-  const numPolys = data[pos++]!;
+  const partyId = payload[pos++]!;
+  const numPolys = payload[pos++]!;
   const aggregate: Int32Array[] = [];
   for (let p = 0; p < numPolys; p++) {
     const poly = new Int32Array(N_COEFFS);
-    const view = new DataView(data.buffer, data.byteOffset + pos, N_COEFFS * 4);
+    const view = new DataView(payload.buffer, payload.byteOffset + pos, N_COEFFS * 4);
     for (let i = 0; i < N_COEFFS; i++) {
       poly[i] = view.getInt32(i * 4, true);
     }

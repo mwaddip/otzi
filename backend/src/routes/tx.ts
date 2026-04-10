@@ -2,6 +2,7 @@ import { Router, type Request, type Response, type RequestHandler } from 'expres
 import { createHash, randomBytes } from 'node:crypto';
 import { Address, BinaryWriter } from '@btc-vision/transaction';
 import { Transaction, toXOnly, tapTweakHash } from '@btc-vision/bitcoin';
+import { schnorr } from '@noble/curves/secp256k1.js';
 import { getContract, OP_20_ABI } from 'opnet';
 import { ConfigStore } from '../lib/config-store.js';
 import { getProvider, getNetwork, generateWallet } from '../lib/opnet-client.js';
@@ -456,6 +457,26 @@ export function txRoutes(store: ConfigStore, requireUser: RequestHandler, requir
           return;
         }
         sigsByHash.set(fs.hash, Buffer.from(fs.signature, 'hex'));
+      }
+
+      // Verify FROST signatures before injecting (BIP340 Schnorr)
+      {
+        const config = store.get();
+        const tweakedPubKey = Buffer.from(config.permafrost!.frostAggregateKey!, 'hex');
+        const untweakedPubKey = Buffer.from(config.permafrost!.frostUntweakedAggregateKey!, 'hex');
+        const tweakedXOnly = toXOnly(tweakedPubKey as never);
+        const untweakedXOnly = toXOnly(untweakedPubKey as never);
+
+        for (const [hashHex, mapping] of capture.sighashMap) {
+          const sig = sigsByHash.get(hashHex);
+          if (!sig) continue;
+          const verifyKey = mapping.type === 'key-path' ? tweakedXOnly : untweakedXOnly;
+          if (!schnorr.verify(sig, Buffer.from(hashHex, 'hex'), verifyKey)) {
+            if (messageHash) broadcastResults.delete(messageHash);
+            res.status(400).json({ error: `BIP340 verification failed for ${mapping.type} input ${mapping.inputIndex} — FROST ceremony may need to be repeated` });
+            return;
+          }
+        }
       }
 
       try {
