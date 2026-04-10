@@ -211,6 +211,31 @@ export const broadcastFrost = (data: {
     body: JSON.stringify(data),
   });
 
+// ── BTC Vault ──
+
+export const getBtcFees = () =>
+  json<{ low: number; normal: number; high: number; fallback?: boolean }>('/btc/fees');
+
+export const prepareBtcSend = (data: { to: string; amount: number; feeRate: number }) =>
+  json<{
+    sighashes: SighashInfo[];
+    challengeToken: string;
+    estimatedFee: number;
+    changeAmount: number;
+  }>('/btc/prepare', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+
+export const broadcastBtcSend = (data: {
+  challengeToken: string;
+  frostSignatures: Array<{ index: number; signature: string }>;
+}) =>
+  json<{ txid: string; alreadyBroadcast?: boolean }>('/btc/broadcast', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+
 // ── Hosting ──
 
 export const getHosting = () =>
