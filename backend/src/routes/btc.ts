@@ -226,15 +226,30 @@ export function btcRoutes(store: ConfigStore, requireUser: RequestHandler): Rout
 
       const rawTx = tx.toHex();
 
-      // Broadcast via OPNet provider (same chain as UTXO source)
       const config = store.get();
-      const provider = getProvider(config.network);
+      let txid: string;
 
-      const txResult = await provider.sendRawTransaction(rawTx, false);
-      if (!txResult.success) {
-        throw new Error(`Broadcast failed: ${txResult.error || 'unknown'}`);
+      if (config.network === 'testnet') {
+        // Testnet is a Signet fork — broadcast via OPNet provider (same chain as UTXO source)
+        const provider = getProvider(config.network);
+        const txResult = await provider.sendRawTransaction(rawTx, false);
+        if (!txResult.success) {
+          throw new Error(`Broadcast failed: ${txResult.error || 'unknown'}`);
+        }
+        txid = txResult.result || tx.getId();
+      } else {
+        // Mainnet — broadcast via mempool.space (direct Bitcoin network)
+        const resp = await fetch(MEMPOOL_TX.mainnet, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain' },
+          body: rawTx,
+        });
+        if (!resp.ok) {
+          const errText = await resp.text();
+          throw new Error(`Broadcast failed: ${errText}`);
+        }
+        txid = (await resp.text()).trim();
       }
-      const txid = txResult.result || tx.getId();
 
       txCache.delete(challengeToken);
       broadcastLock.set(challengeToken, { txid, ts: Date.now() });
