@@ -9,7 +9,7 @@ import {
   type SigningNonces,
   type SignatureShare,
   type Round1Output,
-} from 'frots';
+} from '@mwaddip/frots';
 import {
   encodeFrostSignR1,
   decodeFrostSignR1,

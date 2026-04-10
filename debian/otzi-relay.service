@@ -1,0 +1,14 @@
+[Unit]
+Description=Ötzi Relay
+After=network.target
+
+[Service]
+Type=simple
+User=otzi
+EnvironmentFile=/etc/default/otzi
+ExecStart=/opt/otzi/relay -addr :${RELAY_PORT}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,5 +1,5 @@
 {
-  "name": "opnet-permafrost",
+  "name": "otzi",
   "private": true,
   "version": "1.0.0",
   "type": "module",
@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@btc-vision/post-quantum": "file:vendor/post-quantum",
-    "frots": "github:mwaddip/frots",
+    "@mwaddip/frots": "^0.1.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

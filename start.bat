@@ -1,7 +1,7 @@
 @echo off
-title PERMAFROST Vault
+title Otzi
 echo.
-echo   PERMAFROST Vault
+echo   Otzi
 echo.
 
 where node >nul 2>&1 || (

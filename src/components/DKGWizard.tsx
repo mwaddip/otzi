@@ -64,7 +64,7 @@ import {
   type SigningCommitment,
   type SigningNonces,
   type SignatureShare,
-} from 'frots';
+} from '@mwaddip/frots';
 import { RelayClient } from '../lib/relay';
 import { sessionFingerprint } from '../lib/relay-crypto';
 import { RELAY_URL } from '../lib/api';

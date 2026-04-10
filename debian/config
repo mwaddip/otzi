@@ -3,6 +3,6 @@ set -e
 
 . /usr/share/debconf/confmodule
 
-db_input medium permafrost-vault/port || true
-db_input medium permafrost-vault/domain || true
+db_input medium otzi/port || true
+db_input medium otzi/domain || true
 db_go || true

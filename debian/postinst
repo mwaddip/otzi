@@ -6,44 +6,44 @@ set -e
 case "$1" in
   configure)
     # Read debconf values
-    db_get permafrost-vault/port
+    db_get otzi/port
     PORT="${RET:-3100}"
     RELAY_PORT=$((PORT + 1))
 
-    db_get permafrost-vault/domain
+    db_get otzi/domain
     DOMAIN="${RET:-localhost}"
 
     # Create system user
-    if ! id permafrost >/dev/null 2>&1; then
-      adduser --system --home /var/lib/permafrost --no-create-home \
-              --shell /usr/sbin/nologin --group permafrost
+    if ! id otzi >/dev/null 2>&1; then
+      adduser --system --home /var/lib/otzi --no-create-home \
+              --shell /usr/sbin/nologin --group otzi
     fi
 
     # Data directory
-    mkdir -p /var/lib/permafrost
-    chown permafrost:permafrost /var/lib/permafrost
+    mkdir -p /var/lib/otzi
+    chown otzi:otzi /var/lib/otzi
 
     # Write environment file for systemd
-    cat > /etc/default/permafrost <<EOF
+    cat > /etc/default/otzi <<EOF
 PORT=${PORT}
 RELAY_PORT=${RELAY_PORT}
-DATA_DIR=/var/lib/permafrost
+DATA_DIR=/var/lib/otzi
 NODE_ENV=production
 EOF
 
     # Write hosting seed for first-time setup
-    if [ ! -f /var/lib/permafrost/config.json ]; then
+    if [ ! -f /var/lib/otzi/config.json ]; then
       SSL=true
       [ "$PORT" = "80" ] && SSL=false
-      cat > /var/lib/permafrost/hosting-seed.json <<SEED
+      cat > /var/lib/otzi/hosting-seed.json <<SEED
 {"domain":"${DOMAIN}","port":443,"httpsEnabled":${SSL}}
 SEED
-      chown permafrost:permafrost /var/lib/permafrost/hosting-seed.json
+      chown otzi:otzi /var/lib/otzi/hosting-seed.json
     fi
 
     # Write nginx config
     if [ -d /etc/nginx/sites-available ]; then
-      cat > /etc/nginx/sites-available/permafrost <<NGINX
+      cat > /etc/nginx/sites-available/otzi <<NGINX
 server {
     listen 80;
     server_name ${DOMAIN};
@@ -64,8 +64,8 @@ server {
 NGINX
 
       # Enable site
-      if [ -d /etc/nginx/sites-enabled ] && [ ! -e /etc/nginx/sites-enabled/permafrost ]; then
-        ln -sf /etc/nginx/sites-available/permafrost /etc/nginx/sites-enabled/permafrost
+      if [ -d /etc/nginx/sites-enabled ] && [ ! -e /etc/nginx/sites-enabled/otzi ]; then
+        ln -sf /etc/nginx/sites-available/otzi /etc/nginx/sites-enabled/otzi
       fi
 
       # Test and reload nginx
@@ -80,8 +80,8 @@ NGINX
 
     # Enable and start services
     systemctl daemon-reload
-    systemctl enable permafrost-relay permafrost 2>/dev/null || true
-    systemctl start permafrost-relay permafrost 2>/dev/null || true
+    systemctl enable otzi-relay otzi 2>/dev/null || true
+    systemctl start otzi-relay otzi 2>/dev/null || true
     ;;
 esac
 

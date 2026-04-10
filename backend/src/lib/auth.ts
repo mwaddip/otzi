@@ -98,8 +98,8 @@ export function verifyMLDSA(
   }
 
   // Reconstruct double-hash per OPWallet convention:
-  // signedData = SHA256(hex(SHA256("PERMAFROST auth {challenge}")))
-  const message = `PERMAFROST auth ${challenge}`;
+  // signedData = SHA256(hex(SHA256("Otzi auth {challenge}")))
+  const message = `Otzi auth ${challenge}`;
   const messageHash = createHash('sha256').update(message).digest();
   const walletInput = messageHash.toString('hex');
   const signedHash = createHash('sha256').update(walletInput).digest();

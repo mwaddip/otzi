@@ -49,7 +49,7 @@ jobs:
           cp relay/relay staging/relay
           chmod +x staging/relay
           echo "${TAG#v}" > staging/version.txt
-          tar czf "permafrost-${TAG}-linux-amd64.tar.gz" -C staging .
+          tar czf "otzi-${TAG}-linux-amd64.tar.gz" -C staging .
 
       - name: Package windows-amd64
         run: |
@@ -62,20 +62,20 @@ jobs:
           cp relay/relay.exe staging-win/relay.exe
           cp start.bat staging-win/start.bat
           echo "${TAG#v}" > staging-win/version.txt
-          cd staging-win && zip -r "../permafrost-${TAG}-windows-amd64.zip" . && cd ..
+          cd staging-win && zip -r "../otzi-${TAG}-windows-amd64.zip" . && cd ..
 
       - name: Build debian package
         run: |
           TAG=${GITHUB_REF#refs/tags/}
           VERSION="${TAG#v}"
-          bash debian/build-deb.sh "permafrost-${TAG}-linux-amd64.tar.gz" "$VERSION"
+          bash debian/build-deb.sh "otzi-${TAG}-linux-amd64.tar.gz" "$VERSION"
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |
-            permafrost-*.tar.gz
-            permafrost-*.zip
-            permafrost-vault_*.deb
+            otzi-*.tar.gz
+            otzi-*.zip
+            otzi_*.deb
             install.sh

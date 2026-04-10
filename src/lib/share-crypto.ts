@@ -3,7 +3,7 @@
  */
 
 import type { ThresholdKeyShare } from '@btc-vision/post-quantum/threshold-ml-dsa.js';
-import type { KeyPackage as FrostKeyPackage } from 'frots';
+import type { KeyPackage as FrostKeyPackage } from '@mwaddip/frots';
 import { decrypt } from './crypto';
 import { deserializeKeyShare, deserializeCombinedV3 } from './serialize';
 import { partyIdToFrostId } from './dkg';

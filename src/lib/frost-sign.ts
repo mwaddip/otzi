@@ -10,7 +10,7 @@
 
 import { encodeEnvelope, decodeEnvelope } from './dkg';
 import { fromHex } from './hex';
-import type { SigningCommitment, SignatureShare } from 'frots';
+import type { SigningCommitment, SignatureShare } from '@mwaddip/frots';
 
 // ── Shared types ──
 

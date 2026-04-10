@@ -19,8 +19,7 @@ export function configRoutes(store: ConfigStore, userStore: UserStore, requireAd
     try {
       const config = store.get();
       const { setupState, storageMode, network } = config;
-      const walletConfigured = !!config.wallet;
-      res.json({ state: 'ready', setupState, storageMode, network, walletConfigured, authMode: config.authMode || 'password' });
+      res.json({ state: 'ready', setupState, storageMode, network, authMode: config.authMode || 'password' });
     } catch {
       // Initialized but not loaded (encrypted-persistent, needs unlock)
       res.json({ state: 'locked' });
@@ -219,7 +218,7 @@ export function configRoutes(store: ConfigStore, userStore: UserStore, requireAd
             tweakedPubKey: Buffer.from(wallet.tweakedPubKeyKey).toString('hex'),
             publicKey: Buffer.from(wallet.publicKey).toString('hex'),
           };
-          updates.setupState = { ...(updates.setupState as object), walletSkipped: false };
+          // setupState unchanged — wallet auto-generated silently
           mnemonic.zeroize();
           wallet.zeroize();
         }

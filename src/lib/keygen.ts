@@ -10,7 +10,7 @@ import { encrypt } from './crypto';
 import { serializeKeyShare, serializeCombinedV3 } from './serialize';
 import { toHex } from './hex';
 import type { ThresholdKeyShare } from '@btc-vision/post-quantum/threshold-ml-dsa.js';
-import type { KeyPackage as FrostKeyPackage } from 'frots';
+import type { KeyPackage as FrostKeyPackage } from '@mwaddip/frots';
 
 export interface ShareFile {
   version: 2;
@@ -93,7 +93,7 @@ export async function encryptShareV3(
  */
 export function downloadShareFile(shareFile: ShareFile | ShareFileV3): void {
   const prefix = shareFile.publicKey.slice(0, 16);
-  const filename = `permafrost-share-${shareFile.partyId}-${prefix}.json`;
+  const filename = `otzi-share-${shareFile.partyId}-${prefix}.json`;
   const blob = new Blob([JSON.stringify(shareFile, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');

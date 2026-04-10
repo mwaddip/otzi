@@ -1,5 +1,5 @@
 {
-  "name": "permafrost-vault-backend",
+  "name": "otzi-backend",
   "private": true,
   "version": "1.0.0",
   "type": "module",
@@ -11,12 +11,12 @@
   "dependencies": {
     "@btc-vision/bitcoin": "^7.0.0",
     "@btc-vision/post-quantum": "file:../vendor/post-quantum",
-    "@btc-vision/transaction": "^1.8.2",
+    "@btc-vision/transaction": "^1.8.6",
     "@noble/curves": "^2.0.1",
     "@noble/hashes": "^2.0.1",
     "express": "^4.21.0",
     "http-proxy-middleware": "^3.0.0",
-    "opnet": "^1.8.6"
+    "opnet": "^1.8.13"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",

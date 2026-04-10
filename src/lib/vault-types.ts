@@ -5,8 +5,6 @@ export type NetworkName = 'testnet' | 'mainnet';
 
 export interface SetupState {
   wizardComplete: boolean;
-  walletSkipped: boolean;
-  walletDontShowAgain: boolean;
   dkgComplete: boolean;
 }
 

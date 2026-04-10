@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
 import { InstallWizard } from './components/InstallWizard';
-import { WalletSetup } from './components/WalletSetup';
 import { DKGWizard } from './components/DKGWizard';
 import { SigningPage } from './components/SigningPage';
 import { Settings } from './components/Settings';
@@ -12,7 +11,7 @@ import type { ManifestConfig } from './lib/manifest-types';
 import './styles/global.css';
 import './styles/ceremony.css';
 
-type View = 'loading' | 'wizard' | 'unlock' | 'walletAuth' | 'wallet' | 'dkg' | 'signing' | 'settings';
+type View = 'loading' | 'wizard' | 'unlock' | 'walletAuth' | 'dkg' | 'signing' | 'settings';
 
 export interface SendPrefill {
   contractAddress: string;
@@ -131,9 +130,7 @@ export function App() {
             return;
           }
         }
-        if (!status.setupState.walletSkipped && !status.walletConfigured && !status.setupState.walletDontShowAgain) {
-          setView('wallet');
-        } else if (!status.setupState.dkgComplete) {
+        if (!status.setupState.dkgComplete) {
           setView('dkg');
         } else {
           setView('signing');
@@ -207,8 +204,6 @@ export function App() {
         checkStatus();
       }
     }} />;
-  } else if (view === 'wallet') {
-    content = <WalletSetup onComplete={handleSetupComplete} />;
   } else if (view === 'dkg') {
     content = <DKGWizard onComplete={handleSetupComplete} initialSessionCode={pendingSessionCode} />;
   } else if (view === 'settings') {

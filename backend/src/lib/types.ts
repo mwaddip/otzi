@@ -3,8 +3,6 @@ export type NetworkName = 'testnet' | 'mainnet';
 
 export interface SetupState {
   wizardComplete: boolean;
-  walletSkipped: boolean;
-  walletDontShowAgain: boolean;
   dkgComplete: boolean;
 }
 
@@ -64,8 +62,6 @@ export function defaultConfig(network: NetworkName, storageMode: StorageMode): V
     storageMode,
     setupState: {
       wizardComplete: true,
-      walletSkipped: false,
-      walletDontShowAgain: false,
       dkgComplete: false,
     },
     contracts: [],

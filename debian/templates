@@ -1,13 +1,13 @@
-Template: permafrost-vault/port
+Template: otzi/port
 Type: string
 Default: 3100
-Description: Backend port for PERMAFROST Vault:
+Description: Backend port for Ötzi:
  The port the backend server will listen on. The relay will use
  the next port (e.g., 3101). Choose a port that is not in use.
 
-Template: permafrost-vault/domain
+Template: otzi/domain
 Type: string
 Default: localhost
-Description: Domain name for PERMAFROST Vault:
+Description: Domain name for Ötzi:
  Used in the nginx server_name directive and for generating
  session join URLs. Use 'localhost' for local-only access.

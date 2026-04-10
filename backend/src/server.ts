@@ -71,7 +71,7 @@ app.get('*', (_req, res) => {
 });
 
 const server = app.listen(PORT, () => {
-  console.log(`permafrost-vault backend listening on :${PORT}`);
+  console.log(`otzi backend listening on :${PORT}`);
 });
 
 // Wire WebSocket upgrade to the proxy

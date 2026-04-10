@@ -43,7 +43,7 @@ export function InstallWizard({ onComplete }: Props) {
     try {
       await wallet.requestAccounts();
       // Sign a registration message to extract the ML-DSA public key
-      const regMessage = 'PERMAFROST admin registration';
+      const regMessage = 'Otzi admin registration';
       const regBytes = new TextEncoder().encode(regMessage);
       const regHash = await crypto.subtle.digest('SHA-256', regBytes);
       const regHex = bytesToHex(new Uint8Array(regHash));
@@ -106,7 +106,7 @@ export function InstallWizard({ onComplete }: Props) {
       <div className="steps">
         <div className={`step-dot ${step >= 1 ? 'active' : ''}`} />
         <div className={`step-dot ${step >= 2 ? 'active' : ''}`} />
-        <div className={`step-dot ${step >= 3 ? 'active' : ''}`} />
+        {authMode !== 'wallet' && <div className={`step-dot ${step >= 3 ? 'active' : ''}`} />}
       </div>
 
       {step === 1 && (
@@ -218,15 +218,15 @@ export function InstallWizard({ onComplete }: Props) {
               onClick={() => {
                 setError('');
                 if (authMode === 'wallet') {
-                  // Wallet auth requires persistent server — skip storage selection
+                  // Wallet auth requires persistent server — skip storage step, init directly
                   setStorageMode('persistent');
-                  setStep(3);
+                  handleInit();
                 } else {
                   setStep(3);
                 }
               }}
-              disabled={authMode === 'wallet' && !walletAddress}>
-              Next
+              disabled={(authMode === 'wallet' && !walletAddress) || loading}>
+              {authMode === 'wallet' ? (loading ? <span className="spinner" /> : 'Initialize') : 'Next'}
             </button>
           </div>
         </div>

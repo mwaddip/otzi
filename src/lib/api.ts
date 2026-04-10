@@ -60,7 +60,6 @@ export interface StatusResponse {
   setupState?: VaultConfig['setupState'];
   storageMode?: StorageMode;
   network?: NetworkName;
-  walletConfigured?: boolean;
   authMode?: 'password' | 'wallet';
 }
 
@@ -117,15 +116,6 @@ export const importConfig = (config: VaultConfig) =>
   });
 
 // ── Wallet ──
-
-export const generateWallet = () =>
-  json<{ ok: true; mnemonic: string; config: VaultConfig }>('/wallet/generate', { method: 'POST' });
-
-export const skipWallet = (dontShowAgain: boolean) =>
-  json<{ ok: true }>('/wallet/skip', {
-    method: 'POST',
-    body: JSON.stringify({ dontShowAgain }),
-  });
 
 export const getWalletBalance = () =>
   json<{ balance: string; configured: boolean }>('/wallet/balance');

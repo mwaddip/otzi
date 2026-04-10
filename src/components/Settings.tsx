@@ -162,10 +162,10 @@ export function Settings({ onBack, onSend }: Props) {
             )}
           </div>
 
-          {/* Permafrost */}
+          {/* Threshold Config */}
           {config.permafrost && (
             <div className="card">
-              <h2>Permafrost</h2>
+              <h2>Threshold Config</h2>
               <p>{config.permafrost.threshold}-of-{config.permafrost.parties} threshold · Security level {config.permafrost.level}</p>
               {opnetIdentity && (
                 <div style={{ marginTop: 8 }}>

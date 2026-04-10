@@ -30,7 +30,7 @@ Usage: install.sh [OPTIONS]
 Options:
   --build       Build from source instead of downloading a release
   --deps        Check and install build dependencies (Node 20, Go 1.23)
-  --uninstall   Remove PERMAFROST Vault and its services
+  --uninstall   Remove Ötzi Vault and its services
   --port PORT   Backend port (default: 3100)
   --domain NAME Domain name for web server config
   --yes, -y     Skip confirmation prompts
@@ -61,12 +61,12 @@ done
 
 # ── Paths (root vs user) ─────────────────────────────────────────────────
 if $IS_ROOT; then
-  INSTALL_DIR="/opt/permafrost"
-  DATA_DIR="/var/lib/permafrost"
-  SERVICE_USER="permafrost"
+  INSTALL_DIR="/opt/otzi"
+  DATA_DIR="/var/lib/otzi"
+  SERVICE_USER="otzi"
 else
-  INSTALL_DIR="${HOME}/.permafrost"
-  DATA_DIR="${HOME}/.permafrost/data"
+  INSTALL_DIR="${HOME}/.otzi"
+  DATA_DIR="${HOME}/.otzi/data"
   SERVICE_USER=""
 fi
 
@@ -92,7 +92,7 @@ if ! $IS_ROOT && [[ "$MODE" != "deps" ]] && [[ "$MODE" != "uninstall" ]]; then
   echo -e "${BOLD}Running without root${NC}"
   echo ""
   echo "  The following steps require root and will be skipped:"
-  echo "  - Creating a system user (permafrost)"
+  echo "  - Creating a system user (otzi)"
   echo "  - Installing systemd services (system-wide)"
   echo "  - Configuring nginx/apache reverse proxy"
   echo "  - Installing dependencies (--deps mode)"
@@ -295,7 +295,7 @@ do_download() {
   [[ -n "$tag" ]] || die "Could not determine latest release. Check https://github.com/${REPO}/releases"
 
   local version="${tag#v}"
-  local tarball="permafrost-${tag}-linux-${arch}.tar.gz"
+  local tarball="otzi-${tag}-linux-${arch}.tar.gz"
   local url="https://github.com/${REPO}/releases/download/${tag}/${tarball}"
 
   info "Downloading ${tarball}..."
@@ -309,7 +309,7 @@ do_download() {
   tar xzf "${tmpdir}/${tarball}" -C "$INSTALL_DIR"
   echo "$version" > "${INSTALL_DIR}/version.txt"
 
-  ok "PERMAFROST ${version} installed to ${INSTALL_DIR}"
+  ok "Ötzi ${version} installed to ${INSTALL_DIR}"
 }
 
 # ── Build mode ──────────────────────────────────────────────────────────────
@@ -318,7 +318,7 @@ do_build() {
   check_go   || die "Go ${GO_MIN}+ required. Run: $0 --deps"
 
   local repo_dir=""
-  if [[ -f "package.json" ]] && grep -q '"opnet-permafrost"' package.json 2>/dev/null; then
+  if [[ -f "package.json" ]] && grep -q '"otzi"' package.json 2>/dev/null; then
     repo_dir="$(pwd)"
     info "Building from source in ${repo_dir}..."
   else
@@ -352,7 +352,7 @@ do_build() {
   version=$(cd "$repo_dir" && git describe --tags --always 2>/dev/null || echo "source")
   echo "$version" > "${INSTALL_DIR}/version.txt"
 
-  ok "PERMAFROST built and installed to ${INSTALL_DIR}"
+  ok "Ötzi built and installed to ${INSTALL_DIR}"
 }
 
 # ── Service setup ───────────────────────────────────────────────────────────
@@ -386,9 +386,9 @@ setup_services() {
     chown "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR"
 
     # System-level systemd services
-    cat > /etc/systemd/system/permafrost-relay.service <<EOF
+    cat > /etc/systemd/system/otzi-relay.service <<EOF
 [Unit]
-Description=PERMAFROST Relay
+Description=Ötzi Relay
 After=network.target
 
 [Service]
@@ -402,11 +402,11 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-    cat > /etc/systemd/system/permafrost.service <<EOF
+    cat > /etc/systemd/system/otzi.service <<EOF
 [Unit]
-Description=PERMAFROST Vault Backend
-After=network.target permafrost-relay.service
-Requires=permafrost-relay.service
+Description=Ötzi Vault Backend
+After=network.target otzi-relay.service
+Requires=otzi-relay.service
 
 [Service]
 Type=simple
@@ -425,7 +425,7 @@ WantedBy=multi-user.target
 EOF
 
     systemctl daemon-reload
-    systemctl enable --now permafrost-relay permafrost
+    systemctl enable --now otzi-relay otzi
     ok "System services started"
 
   else
@@ -435,9 +435,9 @@ EOF
     if command -v systemctl &>/dev/null && systemctl --user status &>/dev/null 2>&1; then
       mkdir -p "$user_service_dir"
 
-      cat > "${user_service_dir}/permafrost-relay.service" <<EOF
+      cat > "${user_service_dir}/otzi-relay.service" <<EOF
 [Unit]
-Description=PERMAFROST Relay
+Description=Ötzi Relay
 
 [Service]
 Type=simple
@@ -449,11 +449,11 @@ RestartSec=5
 WantedBy=default.target
 EOF
 
-      cat > "${user_service_dir}/permafrost.service" <<EOF
+      cat > "${user_service_dir}/otzi.service" <<EOF
 [Unit]
-Description=PERMAFROST Vault Backend
-After=permafrost-relay.service
-Requires=permafrost-relay.service
+Description=Ötzi Vault Backend
+After=otzi-relay.service
+Requires=otzi-relay.service
 
 [Service]
 Type=simple
@@ -471,7 +471,7 @@ WantedBy=default.target
 EOF
 
       systemctl --user daemon-reload
-      systemctl --user enable --now permafrost-relay permafrost
+      systemctl --user enable --now otzi-relay otzi
       ok "User services started"
 
       # Linger so services survive logout
@@ -529,9 +529,9 @@ configure_webserver() {
     # Determine config path
     local nginx_conf=""
     if [[ -d /etc/nginx/sites-available ]]; then
-      nginx_conf="/etc/nginx/sites-available/permafrost"
+      nginx_conf="/etc/nginx/sites-available/otzi"
     elif [[ -d /etc/nginx/conf.d ]]; then
-      nginx_conf="/etc/nginx/conf.d/permafrost.conf"
+      nginx_conf="/etc/nginx/conf.d/otzi.conf"
     fi
 
     if [[ -z "$nginx_conf" ]]; then
@@ -579,7 +579,7 @@ configure_webserver() {
       ok "Wrote ${nginx_conf}"
 
       if [[ -d /etc/nginx/sites-enabled ]] && [[ "$nginx_conf" == */sites-available/* ]]; then
-        ln -sf "$nginx_conf" /etc/nginx/sites-enabled/permafrost
+        ln -sf "$nginx_conf" /etc/nginx/sites-enabled/otzi
       fi
 
       if nginx -t &>/dev/null 2>&1; then
@@ -592,7 +592,7 @@ configure_webserver() {
 ${nginx_config}
 CONF'"
       if [[ -d /etc/nginx/sites-enabled ]] && [[ "$nginx_conf" == */sites-available/* ]]; then
-        add_root_cmd "ln -sf ${nginx_conf} /etc/nginx/sites-enabled/permafrost"
+        add_root_cmd "ln -sf ${nginx_conf} /etc/nginx/sites-enabled/otzi"
       fi
       add_root_cmd "nginx -t && systemctl reload nginx"
       info "Nginx config prepared (requires root to write)"
@@ -613,9 +613,9 @@ CONF'"
 
     local apache_conf=""
     if [[ -d /etc/apache2/sites-available ]]; then
-      apache_conf="/etc/apache2/sites-available/permafrost.conf"
+      apache_conf="/etc/apache2/sites-available/otzi.conf"
     elif [[ -d /etc/httpd/conf.d ]]; then
-      apache_conf="/etc/httpd/conf.d/permafrost.conf"
+      apache_conf="/etc/httpd/conf.d/otzi.conf"
     fi
 
     if [[ -z "$apache_conf" ]]; then
@@ -653,7 +653,7 @@ CONF'"
 
       if command -v a2enmod &>/dev/null; then
         a2enmod proxy proxy_http proxy_wstunnel rewrite &>/dev/null 2>&1 || true
-        a2ensite permafrost &>/dev/null 2>&1 || true
+        a2ensite otzi &>/dev/null 2>&1 || true
         ok "Enabled Apache modules and site"
       fi
 
@@ -662,7 +662,7 @@ CONF'"
       add_root_cmd "bash -c 'echo \"${apache_config}\" > ${apache_conf}'"
       if command -v a2enmod &>/dev/null; then
         add_root_cmd "a2enmod proxy proxy_http proxy_wstunnel rewrite"
-        add_root_cmd "a2ensite permafrost"
+        add_root_cmd "a2ensite otzi"
       fi
       add_root_cmd "systemctl reload ${apache_svc}"
       info "Apache config prepared (requires root to write)"
@@ -674,7 +674,7 @@ CONF'"
   echo ""
   warn "No web server detected (nginx or apache)"
   echo ""
-  echo "  PERMAFROST is running on http://localhost:${BACKEND_PORT}"
+  echo "  Ötzi is running on http://localhost:${BACKEND_PORT}"
   echo ""
   echo "  To expose on port 80/443, install nginx or apache and re-run this script."
   echo "  Manual proxy config: forward to http://127.0.0.1:${BACKEND_PORT}"
@@ -684,7 +684,7 @@ CONF'"
 
 # ── Uninstall ───────────────────────────────────────────────────────────────
 do_uninstall() {
-  info "Uninstalling PERMAFROST Vault..."
+  info "Uninstalling Ötzi Vault..."
   echo ""
 
   confirm "This will stop services and remove ${INSTALL_DIR}. Continue?" || {
@@ -693,14 +693,14 @@ do_uninstall() {
 
   # Stop services
   if $IS_ROOT; then
-    systemctl stop permafrost permafrost-relay 2>/dev/null || true
-    systemctl disable permafrost permafrost-relay 2>/dev/null || true
-    rm -f /etc/systemd/system/permafrost.service /etc/systemd/system/permafrost-relay.service
+    systemctl stop otzi otzi-relay 2>/dev/null || true
+    systemctl disable otzi otzi-relay 2>/dev/null || true
+    rm -f /etc/systemd/system/otzi.service /etc/systemd/system/otzi-relay.service
     systemctl daemon-reload
   else
-    systemctl --user stop permafrost permafrost-relay 2>/dev/null || true
-    systemctl --user disable permafrost permafrost-relay 2>/dev/null || true
-    rm -f "${HOME}/.config/systemd/user/permafrost.service" "${HOME}/.config/systemd/user/permafrost-relay.service"
+    systemctl --user stop otzi otzi-relay 2>/dev/null || true
+    systemctl --user disable otzi otzi-relay 2>/dev/null || true
+    rm -f "${HOME}/.config/systemd/user/otzi.service" "${HOME}/.config/systemd/user/otzi-relay.service"
     systemctl --user daemon-reload 2>/dev/null || true
   fi
   ok "Removed services"
@@ -713,21 +713,21 @@ do_uninstall() {
 
   # Remove web server configs (root only)
   if $IS_ROOT; then
-    for f in /etc/nginx/sites-available/permafrost /etc/nginx/sites-enabled/permafrost \
-             /etc/nginx/conf.d/permafrost.conf \
-             /etc/apache2/sites-available/permafrost.conf /etc/httpd/conf.d/permafrost.conf; do
+    for f in /etc/nginx/sites-available/otzi /etc/nginx/sites-enabled/otzi \
+             /etc/nginx/conf.d/otzi.conf \
+             /etc/apache2/sites-available/otzi.conf /etc/httpd/conf.d/otzi.conf; do
       [[ -f "$f" ]] && rm -f "$f" && ok "Removed $f"
     done
     systemctl reload nginx 2>/dev/null || true
     systemctl reload apache2 2>/dev/null || systemctl reload httpd 2>/dev/null || true
-    if id permafrost &>/dev/null; then
-      userdel permafrost 2>/dev/null || true
+    if id otzi &>/dev/null; then
+      userdel otzi 2>/dev/null || true
       ok "Removed system user"
     fi
   fi
 
   echo ""
-  ok "PERMAFROST uninstalled"
+  ok "Ötzi uninstalled"
   echo ""
   warn "Data directory preserved: ${DATA_DIR}"
   echo "  To remove all data: rm -rf ${DATA_DIR}"
@@ -737,7 +737,7 @@ do_uninstall() {
 # ── Main ────────────────────────────────────────────────────────────────────
 main() {
   echo ""
-  echo -e "${BOLD}PERMAFROST Vault Installer${NC}"
+  echo -e "${BOLD}Ötzi Vault Installer${NC}"
   echo ""
 
   case $MODE in

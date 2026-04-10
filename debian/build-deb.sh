@@ -18,28 +18,28 @@ if [[ -z "$TARBALL" ]]; then
   TAG=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
         | grep -oP '"tag_name":\s*"\K[^"]+')
   VERSION="${TAG#v}"
-  TARBALL="/tmp/permafrost-${TAG}-linux-${ARCH}.tar.gz"
-  curl -fsSL "https://github.com/${REPO}/releases/download/${TAG}/permafrost-${TAG}-linux-${ARCH}.tar.gz" \
+  TARBALL="/tmp/otzi-${TAG}-linux-${ARCH}.tar.gz"
+  curl -fsSL "https://github.com/${REPO}/releases/download/${TAG}/otzi-${TAG}-linux-${ARCH}.tar.gz" \
     -o "$TARBALL"
   echo "Downloaded ${TARBALL}"
 fi
 
 [[ -z "$VERSION" ]] && VERSION="0.0.0"
 
-PKG="permafrost-vault"
+PKG="otzi"
 STAGING="/tmp/${PKG}_${VERSION}_${ARCH}"
 rm -rf "$STAGING"
 
 # ── Directory structure ──
 mkdir -p "${STAGING}/DEBIAN"
-mkdir -p "${STAGING}/opt/permafrost"
-mkdir -p "${STAGING}/var/lib/permafrost"
+mkdir -p "${STAGING}/opt/otzi"
+mkdir -p "${STAGING}/var/lib/otzi"
 mkdir -p "${STAGING}/etc/systemd/system"
 mkdir -p "${STAGING}/etc/default"
 
 # ── Extract app files ──
-tar xzf "$TARBALL" -C "${STAGING}/opt/permafrost"
-chmod +x "${STAGING}/opt/permafrost/relay" 2>/dev/null || true
+tar xzf "$TARBALL" -C "${STAGING}/opt/otzi"
+chmod +x "${STAGING}/opt/otzi/relay" 2>/dev/null || true
 
 # ── DEBIAN control files ──
 sed "s/^Version:.*/Version: ${VERSION}/" "${PROJECT_DIR}/debian/control" > "${STAGING}/DEBIAN/control"
@@ -52,14 +52,14 @@ for f in config postinst prerm postrm; do
 done
 
 # ── Systemd units ──
-cp "${PROJECT_DIR}/debian/permafrost.service" "${STAGING}/etc/systemd/system/"
-cp "${PROJECT_DIR}/debian/permafrost-relay.service" "${STAGING}/etc/systemd/system/"
+cp "${PROJECT_DIR}/debian/otzi.service" "${STAGING}/etc/systemd/system/"
+cp "${PROJECT_DIR}/debian/otzi-relay.service" "${STAGING}/etc/systemd/system/"
 
 # ── Default env file (overwritten by postinst with debconf values) ──
-cat > "${STAGING}/etc/default/permafrost" <<EOF
+cat > "${STAGING}/etc/default/otzi" <<EOF
 PORT=3100
 RELAY_PORT=3101
-DATA_DIR=/var/lib/permafrost
+DATA_DIR=/var/lib/otzi
 NODE_ENV=production
 EOF
 

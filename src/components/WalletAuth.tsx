@@ -43,7 +43,7 @@ export function WalletAuth({ onAuthenticated }: Props) {
 
     const { challenge } = await getChallenge();
 
-    const message = `PERMAFROST auth ${challenge}`;
+    const message = `Otzi auth ${challenge}`;
     const msgBytes = new TextEncoder().encode(message);
     const hashBuf = await crypto.subtle.digest('SHA-256', msgBytes);
     const messageHex = bytesToHex(new Uint8Array(hashBuf));

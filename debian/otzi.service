@@ -1,0 +1,16 @@
+[Unit]
+Description=Ötzi Backend
+After=network.target otzi-relay.service
+Requires=otzi-relay.service
+
+[Service]
+Type=simple
+User=otzi
+WorkingDirectory=/opt/otzi
+EnvironmentFile=/etc/default/otzi
+ExecStart=/usr/bin/node backend/server.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
