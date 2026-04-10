@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
@@ -139,5 +139,11 @@ export class UserStore {
   setEverybodyCanRead(value: boolean): void {
     this.db.settings.everybodyCanRead = value;
     this.save();
+  }
+
+  /** Wipe all users, invites, and settings. */
+  reset(): void {
+    this.db = { users: [], invites: [], settings: { everybodyCanRead: true } };
+    if (existsSync(USERS_PATH)) unlinkSync(USERS_PATH);
   }
 }

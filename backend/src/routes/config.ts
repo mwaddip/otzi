@@ -357,6 +357,7 @@ export function configRoutes(store: ConfigStore, userStore: UserStore, requireAd
       return;
     }
     store.reset();
+    userStore.reset();
     res.json({ ok: true });
   });
 
