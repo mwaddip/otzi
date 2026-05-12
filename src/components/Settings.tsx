@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { getConfig, getWalletBalance, getBalances, resetInstance, updateContracts, updateHosting, removeHosting, adminUnlock, setAdminToken, clearAdminToken, hasAdminToken, getSessionRole, downloadBackup, restoreBackup } from '../lib/api';
+import { getConfig, getWalletBalance, getBalances, resetInstance, updateContracts, updateHosting, removeHosting, adminUnlock, setAdminToken, clearAdminToken, hasAdminToken, getSessionRole, downloadBackup, restoreBackup, getVisibility, setVisibility } from '../lib/api';
 import { UserManager } from './UserManager';
 import { ManifestImport } from './ManifestImport';
 import { OP20_METHODS } from '../lib/op20-methods';
@@ -298,9 +298,7 @@ function HostingManager({ config, onConfigUpdate, disabled, isWalletAuth }: { co
 
   useEffect(() => {
     if (isWalletAuth) {
-      import('../lib/api').then(({ getVisibility }) =>
-        getVisibility().then(r => setEverybodyCanRead(r.everybodyCanRead)).catch(() => {})
-      );
+      getVisibility().then(r => setEverybodyCanRead(r.everybodyCanRead)).catch(() => {});
     }
   }, [isWalletAuth]);
 
@@ -416,7 +414,6 @@ function HostingManager({ config, onConfigUpdate, disabled, isWalletAuth }: { co
             onChange={async () => {
               const newVal = !everybodyCanRead;
               try {
-                const { setVisibility } = await import('../lib/api');
                 await setVisibility(newVal);
                 setEverybodyCanRead(newVal);
               } catch { /* ignore */ }

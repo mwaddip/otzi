@@ -3,7 +3,7 @@ import { InstallWizard } from './components/InstallWizard';
 import { DKGWizard } from './components/DKGWizard';
 import { SigningPage } from './components/SigningPage';
 import { Settings } from './components/Settings';
-import { getStatus, hasAdminToken } from './lib/api';
+import { getStatus, hasAdminToken, getAuthMe, getConfig, unlock } from './lib/api';
 import { WalletAuth } from './components/WalletAuth';
 import { PortableConfigBanner } from './components/PortableConfigBanner';
 import { toggleTheme, getTheme } from './lib/theme';
@@ -118,7 +118,6 @@ export function App() {
         // Check wallet auth — skip if session code present (it's a temporary access token)
         if (status.authMode === 'wallet' && !pendingSessionCode) {
           try {
-            const { getAuthMe } = await import('./lib/api');
             const me = await getAuthMe();
             if (!me.authenticated) {
               setView('walletAuth');
@@ -155,7 +154,6 @@ export function App() {
     let applied = false;
     const applyTheme = async () => {
       try {
-        const { getConfig } = await import('./lib/api');
         const cfg = await getConfig();
         const theme = (cfg.manifestConfig as ManifestConfig | undefined)?.manifest?.theme;
         if (!theme) return;
@@ -240,7 +238,6 @@ function UnlockScreen({ onUnlocked }: { onUnlocked: () => void }) {
     setLoading(true);
     setError('');
     try {
-      const { unlock } = await import('./lib/api');
       await unlock(password);
       onUnlocked();
     } catch (e) {

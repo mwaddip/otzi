@@ -65,7 +65,7 @@ import {
 } from '@mwaddip/frots';
 import { RelayClient } from '../lib/relay';
 import { sessionFingerprint } from '../lib/relay-crypto';
-import { RELAY_URL } from '../lib/api';
+import { RELAY_URL, getConfig, saveDKG } from '../lib/api';
 import type { ThresholdKeyShare } from '@btc-vision/post-quantum/threshold-ml-dsa.js';
 import { OtziWordmark } from '../App';
 import { computeKeyLinkHash } from '../lib/frost-link';
@@ -323,9 +323,7 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
   const [hostingConfig, setHostingConfig] = useState<import('../lib/vault-types').HostingConfig | null>(null);
 
   useEffect(() => {
-    import('../lib/api').then(({ getConfig }) =>
-      getConfig().then(c => { if (c.hosting) setHostingConfig(c.hosting); }).catch(() => {})
-    );
+    getConfig().then(c => { if (c.hosting) setHostingConfig(c.hosting); }).catch(() => {});
   }, []);
 
   // ── Transport mode state ──
@@ -1086,7 +1084,7 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
     const untweakedKey = state.frostPublicKeyPackage.untweakedVerifyingKey;
 
     // Fetch network from config, compute hash, start round 1
-    void import('../lib/api').then(({ getConfig }) => getConfig()).then(async cfg => {
+    void getConfig().then(async cfg => {
       const hash = await computeKeyLinkHash(state.publicKey!, aggKey, untweakedKey, cfg.network);
       flinkHashRef.current = hash;
 
@@ -1236,7 +1234,6 @@ export function DKGWizard({ onComplete, initialSessionCode }: DKGWizardProps = {
       downloadShareFile(shareFile);
       // Save DKG result to backend config
       try {
-        const { saveDKG } = await import('../lib/api');
         await saveDKG({
           threshold: state.threshold,
           parties: state.parties,
