@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { createToken, createBitcoinChallenge, requestTokenInfo } from '../lib/auth.js';
+import { createToken, createBitcoinChallenge, requestSession } from '../lib/auth.js';
 import { verifyBitcoinProof } from '../lib/credentials.js';
 import {
   passkeyRegistrationOptions, verifyPasskeyRegistration,
@@ -7,6 +7,7 @@ import {
   type RegistrationResponseJSON, type AuthenticationResponseJSON,
 } from '../lib/passkey.js';
 import type { ConfigStore } from '../lib/config-store.js';
+import type { HostingConfig } from '../lib/types.js';
 import type { Credential, User, UserStore } from '../lib/users.js';
 
 function signedIn(res: Response, user: User): void {
@@ -20,6 +21,13 @@ function pageHost(req: Request): string {
   } catch { /* fall through */ }
   const forwarded = req.headers['x-forwarded-host'];
   return (Array.isArray(forwarded) ? forwarded[0] : forwarded) || req.headers.host || 'unknown';
+}
+
+/** Host users reach the instance at, when hosting is configured. */
+function configuredHost(hosting: HostingConfig | undefined): string | null {
+  if (!hosting?.domain) return null;
+  const port = hosting.port && hosting.port !== 80 && hosting.port !== 443 ? `:${hosting.port}` : '';
+  return `${hosting.domain.toLowerCase()}${port}`;
 }
 
 function cleanLabel(label: unknown, fallback: string): string {
@@ -49,7 +57,7 @@ export function authRoutes(store: ConfigStore, userStore: UserStore): Router {
 
   /** GET /api/auth/me */
   r.get('/me', (req: Request, res: Response) => {
-    const info = requestTokenInfo(req);
+    const info = requestSession(req, userStore);
     if (!info) { res.json({ authenticated: false }); return; }
     const user = info.userId ? userStore.getUser(info.userId) : null;
     res.json({ authenticated: true, role: info.role, ...(user ? { userId: user.id, label: user.label } : {}) });
@@ -57,7 +65,13 @@ export function authRoutes(store: ConfigStore, userStore: UserStore): Router {
 
   /** POST /api/auth/challenge — Bitcoin sign-in message */
   r.post('/challenge', (req: Request, res: Response) => {
-    res.json(createBitcoinChallenge(pageHost(req)));
+    const host = pageHost(req);
+    const expected = store.isLoaded() ? configuredHost(store.get().hosting) : null;
+    if (expected && host.toLowerCase() !== expected) {
+      res.status(400).json({ error: `Sign in from ${expected}` });
+      return;
+    }
+    res.json(createBitcoinChallenge(host));
   });
 
   /** POST /api/auth/bitcoin/login */

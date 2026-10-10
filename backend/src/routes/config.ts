@@ -5,7 +5,7 @@ import {
   NETWORK_NAMES, STORAGE_MODES, AUTH_MODES,
   type VaultConfig, type NetworkName, type StorageMode, type AuthMode,
 } from '../lib/types.js';
-import { hashPassword, verifyPassword, createToken, requestTokenInfo, revokeAllTokens } from '../lib/auth.js';
+import { hashPassword, verifyPassword, createToken, requestSession, revokeAllTokens } from '../lib/auth.js';
 import { encryptConfig, decryptConfig } from '../lib/encryption.js';
 import { verifyCredentialProof } from '../lib/credentials.js';
 import { validateVaultKey, sameVaultKey, vaultPayment } from '../lib/bitcoin.js';
@@ -188,7 +188,7 @@ export function configRoutes(store: ConfigStore, userStore: UserStore, requireAd
   r.post('/restore', (req: Request, res: Response) => {
     if (store.isInitialized()) {
       if (!store.isLoaded()) { res.status(503).json({ error: 'Instance not ready' }); return; }
-      const info = requestTokenInfo(req);
+      const info = requestSession(req, userStore);
       const adminRole = store.get().authMode === 'password' ? 'password-admin' : 'admin';
       if (info?.role !== adminRole) { res.status(401).json({ error: 'Admin authentication required' }); return; }
     }

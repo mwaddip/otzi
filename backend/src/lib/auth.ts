@@ -64,6 +64,17 @@ export function requestTokenInfo(req: Request): TokenInfo | null {
   return token ? getTokenInfo(token) : null;
 }
 
+/**
+ * The request's session with its current role. User tokens take their role
+ * from the user store, so removals and role changes apply immediately.
+ */
+export function requestSession(req: Request, userStore: UserStore): TokenInfo | null {
+  const info = requestTokenInfo(req);
+  if (!info?.userId) return info;
+  const user = userStore.getUser(info.userId);
+  return user ? { ...info, role: user.role } : null;
+}
+
 // ── One-use challenges ──
 
 export type ChallengeKind = 'bitcoin' | 'passkey-register' | 'passkey-login';
@@ -114,8 +125,8 @@ export function createAuthMiddleware(store: ConfigStore, userStore: UserStore): 
         res.status(503).json({ error: 'Instance not ready' });
         return;
       }
-      // An unknown or expired token counts as no token
-      const info = requestTokenInfo(req);
+      // An unknown or expired token, or one of a removed user, counts as no token
+      const info = requestSession(req, userStore);
       const error = check(info);
       if (error) {
         res.status(info ? 403 : 401).json({ error });
