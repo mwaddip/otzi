@@ -17,7 +17,7 @@ import type { SigningCommitment, SignatureShare } from '@mwaddip/frots';
 export interface SighashInfo {
   index: number;
   hash: string;  // hex, 32 bytes
-  type: 'script-path' | 'key-path';
+  type: 'key-path';
 }
 
 export interface FrostSignatureSet {

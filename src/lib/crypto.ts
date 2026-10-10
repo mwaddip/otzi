@@ -1,5 +1,5 @@
 /**
- * AES-256-GCM encryption/decryption for PERMAFROST share files.
+ * AES-256-GCM encryption/decryption for share files and backups.
  * Uses Web Crypto API (available in all modern browsers).
  * Key derivation: PBKDF2 (600k iterations, SHA-256) from password.
  */

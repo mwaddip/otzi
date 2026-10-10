@@ -1,282 +1,205 @@
 import { useState, useEffect } from 'react';
-import { getConfig, getWalletBalance, getBalances, resetInstance, updateContracts, updateHosting, removeHosting, adminUnlock, setAdminToken, clearAdminToken, hasAdminToken, getSessionRole, downloadBackup, restoreBackup, getVisibility, setVisibility } from '../lib/api';
+import {
+  getConfig, resetInstance, updateHosting, removeHosting, adminUnlock, setSession, clearSession,
+  isAdminSession, downloadBackup, restoreBackup, getVisibility, setVisibility, setChainApi,
+} from '../lib/api';
+import { explorerAddressUrl, vaultParties } from '../lib/bitcoin';
+import { NETWORK_LABELS, type AuthMode, type NetworkName, type VaultConfig } from '../lib/vault-types';
+import { AddressBook } from './AddressBook';
 import { UserManager } from './UserManager';
-import { ManifestImport } from './ManifestImport';
-import { OP20_METHODS } from '../lib/op20-methods';
-import type { VaultConfig, ContractConfig } from '../lib/vault-types';
-import type { SendPrefill } from '../App';
 
 interface Props {
+  network: NetworkName;
+  authMode: AuthMode;
   onBack: () => void;
-  onSend: (prefill: SendPrefill) => void;
+  /** Sign-in or instance state changed (sign-out, reset); the app re-checks status. */
+  onStatusChange: () => void;
 }
 
-function formatTokenBalance(raw: string, decimals: number): string {
-  if (decimals === 0) return raw;
-  const bi = BigInt(raw);
-  const divisor = 10n ** BigInt(decimals);
-  const whole = bi / divisor;
-  const remainder = bi % divisor;
-  if (remainder === 0n) return whole.toString();
-  const fracStr = remainder.toString().padStart(decimals, '0').replace(/0+$/, '');
-  return `${whole}.${fracStr}`;
-}
+const STORAGE_LABELS: Record<VaultConfig['storageMode'], string> = {
+  'persistent': 'Persistent',
+  'encrypted-persistent': 'Encrypted persistent',
+  'encrypted-portable': 'Encrypted portable',
+};
 
-async function deriveOpnetIdentity(combinedPubKeyHex: string): Promise<string> {
-  const bytes = new Uint8Array(combinedPubKeyHex.match(/.{2}/g)!.map(b => parseInt(b, 16)));
-  const hash = await crypto.subtle.digest('SHA-256', bytes.buffer as ArrayBuffer);
-  return '0x' + Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
-export function Settings({ onBack, onSend }: Props) {
+export function Settings({ network, authMode, onBack, onStatusChange }: Props) {
   const [config, setConfig] = useState<VaultConfig | null>(null);
-  const [balance, setBalance] = useState<string>('0');
-  const [tokenBalances, setTokenBalances] = useState<Array<{ address: string; symbol: string; balance: string; decimals: number }>>([]);
-  const [opnetIdentity, setOpnetIdentity] = useState<string | null>(null);
-  const [resetStep, setResetStep] = useState<0 | 1 | 2>(0);
-  const [resetInput, setResetInput] = useState('');
-  const [error, setError] = useState('');
-  const [unlocked, setUnlocked] = useState(hasAdminToken());
+  const [loadError, setLoadError] = useState('');
+  const [isAdmin, setIsAdmin] = useState(isAdminSession());
   const [unlockPassword, setUnlockPassword] = useState('');
   const [unlockError, setUnlockError] = useState('');
-  const [unlocking, setUnlocking] = useState(false);
-  const [showUnlockInput, setShowUnlockInput] = useState(false);
+  const [resetStep, setResetStep] = useState(0);
+  const [resetInput, setResetInput] = useState('');
+  const [resetError, setResetError] = useState('');
+  const isAccounts = authMode === 'accounts';
 
-  const sessionRole = getSessionRole();
-  const isWalletAuth = config?.authMode === 'wallet';
-
-  const needsAdmin = config?.hasAdminPassword ?? false;
-  const isLocked = isWalletAuth ? sessionRole !== 'admin' : (needsAdmin && !unlocked);
+  useEffect(() => {
+    getConfig().then(setConfig).catch(e => setLoadError((e as Error).message));
+  }, []);
 
   const handleUnlock = async () => {
-    if (!unlockPassword) return;
-    setUnlocking(true);
     setUnlockError('');
     try {
       const { token } = await adminUnlock(unlockPassword);
-      setAdminToken(token);
-      setUnlocked(true);
-      setShowUnlockInput(false);
+      setSession(token, 'password-admin');
       setUnlockPassword('');
+      setIsAdmin(true);
     } catch (e) {
       setUnlockError((e as Error).message);
-    } finally {
-      setUnlocking(false);
     }
   };
 
   const handleLock = () => {
-    clearAdminToken();
-    setUnlocked(false);
+    clearSession();
+    setIsAdmin(false);
+    if (isAccounts) onStatusChange();
   };
 
-  useEffect(() => {
-    getConfig().then(c => {
-      setConfig(c);
-      if (c.permafrost?.combinedPubKey) {
-        deriveOpnetIdentity(c.permafrost.combinedPubKey).then(setOpnetIdentity).catch(() => {});
-      }
-    }).catch(console.error);
-    getWalletBalance().then(r => setBalance(r.balance)).catch(() => {});
-    getBalances().then(r => setTokenBalances(r.balances.map(b => ({ address: b.address, symbol: b.symbol, balance: b.balance, decimals: b.decimals })))).catch(() => {});
-  }, []);
-
   const handleReset = async () => {
-    if (resetStep === 0) { setResetStep(1); return; }
-    if (resetStep === 1) { setResetStep(2); return; }
-    if (resetInput !== 'RESET') { setError('Type RESET to confirm'); return; }
+    if (resetStep < 2) { setResetStep(resetStep + 1); return; }
+    if (resetInput !== 'RESET') { setResetError('Type RESET to confirm'); return; }
     try {
       await resetInstance();
-      window.location.reload();
+      clearSession();
+      onStatusChange();
+    } catch (e) {
+      setResetError((e as Error).message);
+    }
+  };
+
+  const locked = !isAdmin;
+
+  return (
+    <div className="ceremony" style={{ maxWidth: 1100 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+        <h1>Settings</h1>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {isAdmin && <button className="btn btn-secondary" onClick={handleLock} style={{ fontSize: 13 }}>{isAccounts ? 'Sign out' : 'Lock'}</button>}
+          <button className="btn btn-secondary" onClick={onBack}>Back</button>
+        </div>
+      </div>
+
+      {locked && !isAccounts && (
+        <div className="card" style={{ marginBottom: 16, borderColor: 'var(--accent)' }}>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input type="password" value={unlockPassword} placeholder="Admin password" style={{ flex: 1 }}
+              onChange={e => { setUnlockPassword(e.target.value); setUnlockError(''); }}
+              onKeyDown={e => { if (e.key === 'Enter') void handleUnlock(); }} />
+            <button className="btn btn-primary" onClick={() => void handleUnlock()} disabled={!unlockPassword}>Unlock</button>
+          </div>
+          {unlockError && <div className="warning" style={{ marginTop: 8 }}>{unlockError}</div>}
+        </div>
+      )}
+      {locked && isAccounts && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <p style={{ fontSize: 13 }}>Changing settings requires an admin account.</p>
+        </div>
+      )}
+
+      {loadError && <div className="warning">{loadError}</div>}
+
+      {config && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 16, alignItems: 'start' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <InstanceCard config={config} onConfigUpdate={setConfig} disabled={locked} />
+            <AddressBook network={network} disabled={locked} />
+            {isAccounts && isAdmin && <UserManager />}
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <HostingManager config={config} onConfigUpdate={setConfig} disabled={locked} isAccounts={isAccounts} />
+            <BackupRestore disabled={locked} />
+
+            <div className="card" style={locked ? { opacity: 0.5, pointerEvents: 'none' } : {}}>
+              <h2>Reset Instance</h2>
+              {resetStep === 0 && (
+                <button className="btn btn-secondary btn-full" style={{ color: 'var(--red)' }} onClick={() => void handleReset()}>Reset Instance</button>
+              )}
+              {resetStep === 1 && (
+                <>
+                  <div className="warning">
+                    This deletes the configuration, address book and users. Share files are not affected and still control the vault.
+                  </div>
+                  <div style={{ display: 'flex', gap: 12 }}>
+                    <button className="btn btn-secondary" onClick={() => setResetStep(0)}>Cancel</button>
+                    <button className="btn btn-secondary" style={{ color: 'var(--red)', flex: 1 }} onClick={() => void handleReset()}>I understand, continue</button>
+                  </div>
+                </>
+              )}
+              {resetStep === 2 && (
+                <>
+                  <input value={resetInput} onChange={e => setResetInput(e.target.value)} placeholder="Type RESET" style={{ width: '100%', marginBottom: 12 }} />
+                  {resetError && <div className="warning">{resetError}</div>}
+                  <div style={{ display: 'flex', gap: 12 }}>
+                    <button className="btn btn-secondary" onClick={() => { setResetStep(0); setResetInput(''); }}>Cancel</button>
+                    <button className="btn btn-secondary" style={{ color: 'var(--red)', flex: 1 }} onClick={() => void handleReset()}>Confirm Reset</button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Instance ──
+
+function InstanceCard({ config, onConfigUpdate, disabled }: { config: VaultConfig; onConfigUpdate: (c: VaultConfig) => void; disabled?: boolean }) {
+  const [esploraUrl, setEsploraUrl] = useState(config.esploraUrl ?? '');
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+
+  const save = async (value: string | null) => {
+    setError('');
+    setMessage('');
+    try {
+      const res = await setChainApi(value);
+      onConfigUpdate({ ...config, esploraUrl: value ?? undefined, chainApiUrl: res.chainApiUrl });
+      if (value === null) setEsploraUrl('');
+      setMessage(`Using ${res.chainApiUrl}`);
     } catch (e) {
       setError((e as Error).message);
     }
   };
 
-  if (!config) return <div className="ceremony"><div className="spinner" /></div>;
-
   return (
-    <div className="ceremony" style={{ maxWidth: 1200 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <h1>Settings</h1>
-        <div style={{ display: 'flex', gap: 8 }}>
-          {needsAdmin && unlocked && (
-            <button className="btn btn-secondary" onClick={handleLock} style={{ fontSize: 13 }}>Lock</button>
-          )}
-          <button className="btn btn-secondary" onClick={onBack}>Back</button>
-        </div>
+    <div className="card">
+      <h2>Instance</h2>
+      <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 16px', fontSize: 13, marginBottom: 16 }}>
+        <span style={{ color: 'var(--white-dim)' }}>Network</span><span>{NETWORK_LABELS[config.network]}</span>
+        <span style={{ color: 'var(--white-dim)' }}>Storage</span><span>{STORAGE_LABELS[config.storageMode]}</span>
+        <span style={{ color: 'var(--white-dim)' }}>Sign-in</span><span>{config.authMode === 'accounts' ? 'Accounts' : 'Admin password'}</span>
+        {config.vault && (<>
+          <span style={{ color: 'var(--white-dim)' }}>Threshold</span>
+          <span>{config.vault.minSigners} of {vaultParties(config.vault)}</span>
+        </>)}
       </div>
 
-      {/* Admin unlock bar */}
-      {isLocked && !isWalletAuth && (
-        <div className="card" style={{ marginBottom: 16, borderColor: 'var(--accent)' }}>
-          {!showUnlockInput ? (
-            <button className="btn btn-primary btn-full" onClick={() => setShowUnlockInput(true)}>
-              Unlock Settings
-            </button>
-          ) : (
-            <>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <input
-                  type="password"
-                  autoFocus
-                  value={unlockPassword}
-                  onChange={e => { setUnlockPassword(e.target.value); setUnlockError(''); }}
-                  onKeyDown={e => e.key === 'Enter' && handleUnlock()}
-                  placeholder="Admin password"
-                  style={{ flex: 1 }}
-                />
-                <button className="btn btn-primary" onClick={handleUnlock} disabled={unlocking || !unlockPassword}>
-                  {unlocking ? <span className="spinner" /> : 'Unlock'}
-                </button>
-                <button className="btn btn-secondary" onClick={() => { setShowUnlockInput(false); setUnlockPassword(''); setUnlockError(''); }}>
-                  Cancel
-                </button>
-              </div>
-              {unlockError && <div className="warning" style={{ marginTop: 8 }}>{unlockError}</div>}
-            </>
-          )}
-        </div>
+      {config.vaultAddress && (
+        <>
+          <div style={{ fontSize: 12, color: 'var(--white-dim)' }}>Vault address</div>
+          <div className="pubkey-display" style={{ fontSize: 12 }}>{config.vaultAddress}</div>
+          <a href={explorerAddressUrl(config.chainApiUrl, config.vaultAddress)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: 'var(--accent)' }}>View on explorer ↗</a>
+        </>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 16, alignItems: 'start' }}>
-        {/* ── Left column: Status & Info ── */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {/* Network + Wallet */}
-          <div className="card">
-            <h2>Instance</h2>
-            <p style={{ marginBottom: 12 }}>{config.network === 'testnet' ? 'Testnet' : 'Mainnet'} · Storage: {config.storageMode}</p>
-            {config.wallet ? (
-              <>
-                <div style={{ marginBottom: 8 }}>
-                  <strong style={{ fontSize: 13, color: 'var(--gray-light)' }}>P2TR Address</strong>
-                  <div className="pubkey-display" style={{ fontSize: 12, marginTop: 4 }}>{config.permafrost?.frostP2tr || config.wallet.p2tr}</div>
-                </div>
-                <div>
-                  <strong style={{ fontSize: 13, color: 'var(--gray-light)' }}>BTC Balance</strong>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
-                    <span style={{ fontSize: 16, fontWeight: 600 }}>{(parseInt(balance) / 1e8).toFixed(8)} BTC</span>
-                    <button
-                      style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 14, padding: 0, lineHeight: 1 }}
-                      onClick={() => onSend({ type: 'btc' })}
-                      title="Send BTC"
-                    >
-                      ↗
-                    </button>
-                  </div>
-                </div>
-              </>
-            ) : (
-              <p style={{ fontSize: 13, color: 'var(--white-dim)' }}>No wallet configured.</p>
-            )}
-          </div>
-
-          {/* Threshold Config */}
-          {config.permafrost && (
-            <div className="card">
-              <h2>Threshold Config</h2>
-              <p>{config.permafrost.threshold}-of-{config.permafrost.parties} threshold · Security level {config.permafrost.level}</p>
-              {opnetIdentity && (
-                <div style={{ marginTop: 8 }}>
-                  <strong style={{ fontSize: 13, color: 'var(--gray-light)' }} title="SHA-256 hash of the combined ML-DSA public key — uniquely identifies this vault on the OPNet network">OPNet Identity</strong>
-                  <div className="pubkey-display" style={{ fontSize: 12, marginTop: 4 }}>{opnetIdentity}</div>
-                </div>
-              )}
-              <div style={{ marginTop: 8 }}>
-                <strong style={{ fontSize: 13, color: 'var(--gray-light)' }} title="Aggregated threshold public key from all DKG parties — used to verify signatures on-chain">Combined ML-DSA Public Key</strong>
-                <div className="pubkey-display" style={{ fontSize: 11, marginTop: 4 }}>
-                  {config.permafrost.combinedPubKey.slice(0, 64)}...
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* OP-20 Balances */}
-          {tokenBalances.length > 0 && (
-            <div className="card">
-              <h2>Token Balances</h2>
-              {tokenBalances.map((t, i) => (
-                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', fontSize: 14 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <span>{t.symbol}</span>
-                    <button
-                      style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 14, padding: 0, lineHeight: 1 }}
-                      onClick={() => onSend({ type: 'contract', contractAddress: t.address, method: 'transfer' })}
-                      title="Send"
-                    >
-                      ↗
-                    </button>
-                  </div>
-                  <span style={{ fontFamily: 'monospace' }}>{formatTokenBalance(t.balance, t.decimals)}</span>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Users (wallet auth) */}
-          {isWalletAuth && sessionRole === 'admin' && <UserManager />}
+      <div style={{ marginTop: 16, ...(disabled ? { opacity: 0.5, pointerEvents: 'none' as const } : {}) }}>
+        <div className="form-row">
+          <label>
+            Chain API (Esplora URL)
+            <input value={esploraUrl} onChange={e => setEsploraUrl(e.target.value)} placeholder={config.chainApiUrl} style={{ fontFamily: 'monospace', fontSize: 12 }} />
+          </label>
         </div>
-
-        {/* ── Right column: Configuration ── */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {/* Project Manifest */}
-          <ManifestImport disabled={isLocked} />
-
-          {/* Contracts */}
-          <ContractManager
-            contracts={config.contracts}
-            disabled={isLocked}
-            onUpdate={(contracts) => {
-              updateContracts(contracts).then(() => {
-                setConfig(prev => prev ? { ...prev, contracts } : prev);
-              }).catch(e => setError((e as Error).message));
-            }}
-          />
-
-          {/* Hosting */}
-          <HostingManager config={config} onConfigUpdate={setConfig} disabled={isLocked} isWalletAuth={isWalletAuth} />
-
-          {/* Backup & Restore */}
-          <BackupRestore disabled={isLocked} />
-
-          {/* Reset */}
-          <div className="card" style={isLocked ? { opacity: 0.5, pointerEvents: 'none' } : {}}>
-            <h2>Reset Instance</h2>
-            {resetStep === 0 && (
-              <button className="btn btn-secondary btn-full" style={{ color: 'var(--red)' }} onClick={handleReset} disabled={isLocked}>
-                Reset Instance
-              </button>
-            )}
-            {resetStep === 1 && (
-              <>
-                <div className="warning">This will permanently delete all data: wallet, DKG shares, and configuration.</div>
-                <div style={{ display: 'flex', gap: 12 }}>
-                  <button className="btn btn-secondary" onClick={() => setResetStep(0)}>Cancel</button>
-                  <button className="btn btn-secondary" style={{ color: 'var(--red)', flex: 1 }} onClick={handleReset}>
-                    I understand, continue
-                  </button>
-                </div>
-              </>
-            )}
-            {resetStep === 2 && (
-              <>
-                <div className="warning">Type RESET to confirm.</div>
-                <input
-                  value={resetInput}
-                  onChange={e => setResetInput(e.target.value)}
-                  placeholder="Type RESET"
-                  style={{ width: '100%', marginBottom: 12 }}
-                />
-                {error && <div className="warning">{error}</div>}
-                <div style={{ display: 'flex', gap: 12 }}>
-                  <button className="btn btn-secondary" onClick={() => { setResetStep(0); setResetInput(''); }}>Cancel</button>
-                  <button className="btn btn-secondary" style={{ color: 'var(--red)', flex: 1 }} onClick={handleReset}>
-                    Confirm Reset
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
+        <p style={{ fontSize: 12, color: 'var(--white-dim)' }}>
+          Leave empty for mempool.space. A self-hosted mempool or electrs server keeps your vault address private.
+        </p>
+        {error && <div className="warning">{error}</div>}
+        {message && <div style={{ fontSize: 13, color: 'var(--accent)', marginBottom: 8 }}>{message}</div>}
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn btn-primary" style={{ flex: 1 }} disabled={!esploraUrl.trim() || esploraUrl.trim() === config.esploraUrl} onClick={() => void save(esploraUrl.trim())}>Save</button>
+          {config.esploraUrl && <button className="btn btn-secondary" onClick={() => void save(null)}>Use default</button>}
         </div>
       </div>
     </div>
@@ -285,7 +208,7 @@ export function Settings({ onBack, onSend }: Props) {
 
 // ── Hosting Manager ──
 
-function HostingManager({ config, onConfigUpdate, disabled, isWalletAuth }: { config: VaultConfig; onConfigUpdate: (c: VaultConfig) => void; disabled?: boolean; isWalletAuth?: boolean }) {
+function HostingManager({ config, onConfigUpdate, disabled, isAccounts }: { config: VaultConfig; onConfigUpdate: (c: VaultConfig) => void; disabled?: boolean; isAccounts?: boolean }) {
   const hosting = config.hosting;
   const [domain, setDomain] = useState(hosting?.domain || '');
   const [port, setPort] = useState(hosting?.port?.toString() || '443');
@@ -297,10 +220,10 @@ function HostingManager({ config, onConfigUpdate, disabled, isWalletAuth }: { co
   const [everybodyCanRead, setEverybodyCanRead] = useState(true);
 
   useEffect(() => {
-    if (isWalletAuth) {
+    if (isAccounts) {
       getVisibility().then(r => setEverybodyCanRead(r.everybodyCanRead)).catch(() => {});
     }
-  }, [isWalletAuth]);
+  }, [isAccounts]);
 
   const hasChanges = domain !== (hosting?.domain || '')
     || port !== (hosting?.port?.toString() || '')
@@ -406,20 +329,18 @@ function HostingManager({ config, onConfigUpdate, disabled, isWalletAuth }: { co
         )}
       </div>
 
-      {isWalletAuth && (
+      {isAccounts && (
         <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer', marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--gray-dark)' }}>
           <input
             type="checkbox"
             checked={everybodyCanRead}
-            onChange={async () => {
+            onChange={() => {
               const newVal = !everybodyCanRead;
-              try {
-                await setVisibility(newVal);
-                setEverybodyCanRead(newVal);
-              } catch { /* ignore */ }
+              setEverybodyCanRead(newVal);
+              setVisibility(newVal).catch(e => { setEverybodyCanRead(!newVal); setError((e as Error).message); });
             }}
           />
-          Allow unauthenticated visitors to view dashboard and settings (read-only)
+          Let visitors who are not signed in view the vault page (read-only)
         </label>
       )}
     </div>
@@ -457,14 +378,14 @@ function BackupRestore({ disabled }: { disabled?: boolean }) {
   const handleRestore = () => {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.enc,.json';
+    input.accept = '.enc,.txt,.json';
     input.onchange = async (e) => {
       const file = (e.target as HTMLInputElement).files?.[0];
       if (!file) return;
       if (!restorePassword) { setError('Password required'); return; }
       setLoading(true); setError('');
       try {
-        const encrypted = await file.text();
+        const encrypted = (await file.text()).trim();
         await restoreBackup(encrypted, restorePassword);
         window.location.reload();
       } catch (err) { setError((err as Error).message); }
@@ -477,7 +398,7 @@ function BackupRestore({ disabled }: { disabled?: boolean }) {
     <div className="card" style={disabled ? { opacity: 0.5, pointerEvents: 'none' } : {}}>
       <h2>Backup</h2>
       <p style={{ fontSize: 13, color: 'var(--white-dim)', marginBottom: 12 }}>
-        Encrypted backup of wallet, DKG keys, contracts, manifest, and users.
+        Encrypted backup of the configuration (vault public key, address book, hosting, sign-in) and users. Share files are not included — they stay with the parties.
       </p>
 
       {mode === 'idle' && (
@@ -533,203 +454,6 @@ function BackupRestore({ disabled }: { disabled?: boolean }) {
       )}
 
       {message && <div style={{ fontSize: 13, color: 'var(--accent)', marginTop: 8 }}>{message}</div>}
-    </div>
-  );
-}
-
-// ── Contract Manager ──
-
-type ContractType = 'op20' | 'custom';
-
-function ContractManager({ contracts, onUpdate, disabled }: { contracts: ContractConfig[]; onUpdate: (c: ContractConfig[]) => void; disabled?: boolean }) {
-  const [adding, setAdding] = useState(false);
-  const [contractType, setContractType] = useState<ContractType>('op20');
-  const [name, setName] = useState('');
-  const [address, setAddress] = useState('');
-  const [selectedMethods, setSelectedMethods] = useState<Set<string>>(new Set());
-  const [abiText, setAbiText] = useState('');
-  const [abiError, setAbiError] = useState('');
-  const [parsedAbiMethods, setParsedAbiMethods] = useState<string[]>([]);
-
-  const resetForm = () => {
-    setAdding(false);
-    setContractType('op20');
-    setName('');
-    setAddress('');
-    setSelectedMethods(new Set());
-    setAbiText('');
-    setAbiError('');
-    setParsedAbiMethods([]);
-  };
-
-  const handleParseAbi = () => {
-    try {
-      const abi = JSON.parse(abiText) as Array<{ name?: string; inputs?: unknown[] }>;
-      const methodNames = abi.filter(e => e.name && e.inputs).map(e => e.name!);
-      if (methodNames.length === 0) { setAbiError('No callable methods found in ABI'); return; }
-      setParsedAbiMethods(methodNames);
-      setSelectedMethods(new Set(methodNames));
-      setAbiError('');
-    } catch {
-      setAbiError('Invalid JSON');
-    }
-  };
-
-  const toggleMethod = (m: string) => {
-    setSelectedMethods(prev => {
-      const next = new Set(prev);
-      if (next.has(m)) next.delete(m); else next.add(m);
-      return next;
-    });
-  };
-
-  const handleAdd = () => {
-    if (!name.trim() || !address.trim()) return;
-    if (selectedMethods.size === 0) return;
-
-    const newContract: ContractConfig = {
-      name: name.trim(),
-      address: address.trim(),
-      methods: [...selectedMethods],
-      abi: contractType === 'custom' ? JSON.parse(abiText) : [],
-    };
-    onUpdate([...contracts, newContract]);
-    resetForm();
-  };
-
-  const handleRemove = (index: number) => {
-    onUpdate(contracts.filter((_, i) => i !== index));
-  };
-
-  const availableMethods = contractType === 'op20'
-    ? OP20_METHODS.map(m => m.name)
-    : parsedAbiMethods;
-
-  return (
-    <div className="card" style={disabled ? { opacity: 0.5, pointerEvents: 'none' } : {}}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <h2 style={{ marginBottom: 0 }}>Contracts</h2>
-        {!adding && (
-          <button className="btn btn-secondary" style={{ fontSize: 13, padding: '6px 14px' }} onClick={() => setAdding(true)}>
-            + Add Contract
-          </button>
-        )}
-      </div>
-
-      {/* Existing contracts */}
-      {contracts.length === 0 && !adding && (
-        <p style={{ color: 'var(--white-dim)', fontSize: 13 }}>
-          No contracts configured. The signing page will show all OP-20 methods with manual address entry.
-        </p>
-      )}
-      {contracts.map((c, i) => (
-        <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', padding: '10px 0', borderBottom: '1px solid var(--gray-dark)' }}>
-          <div>
-            <strong style={{ fontSize: 14 }}>{c.name}</strong>
-            {c.abi && c.abi.length > 0 && <span style={{ fontSize: 11, color: 'var(--accent)', marginLeft: 8 }}>Custom ABI</span>}
-            <div style={{ fontSize: 12, fontFamily: 'monospace', color: 'var(--white-dim)', marginTop: 2 }}>{c.address}</div>
-            <div style={{ fontSize: 12, color: 'var(--gray-light)', marginTop: 2 }}>{c.methods.join(', ')}</div>
-          </div>
-          <button
-            className="btn btn-secondary"
-            style={{ fontSize: 12, padding: '4px 10px', color: 'var(--red)', flexShrink: 0 }}
-            onClick={() => handleRemove(i)}
-          >
-            Remove
-          </button>
-        </div>
-      ))}
-
-      {/* Add contract form */}
-      {adding && (
-        <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--gray-dark)' }}>
-          <h3 style={{ fontSize: 15, marginBottom: 12 }}>Add Contract</h3>
-
-          {/* Type selector */}
-          <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-            <button
-              className={`btn ${contractType === 'op20' ? 'btn-primary' : 'btn-secondary'}`}
-              style={{ flex: 1, padding: '8px 12px', fontSize: 13 }}
-              onClick={() => { setContractType('op20'); setSelectedMethods(new Set()); setParsedAbiMethods([]); setAbiText(''); }}
-            >
-              Standard OP-20
-            </button>
-            <button
-              className={`btn ${contractType === 'custom' ? 'btn-primary' : 'btn-secondary'}`}
-              style={{ flex: 1, padding: '8px 12px', fontSize: 13 }}
-              onClick={() => { setContractType('custom'); setSelectedMethods(new Set()); }}
-            >
-              Custom ABI
-            </button>
-          </div>
-
-          <div className="form-row">
-            <label>
-              Name
-              <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. WBTC Token" />
-            </label>
-          </div>
-          <div className="form-row">
-            <label>
-              Contract Address
-              <input value={address} onChange={e => setAddress(e.target.value)} placeholder="0x..." />
-            </label>
-          </div>
-
-          {/* Custom ABI input */}
-          {contractType === 'custom' && (
-            <div style={{ marginBottom: 16 }}>
-              <label style={{ display: 'block', fontSize: 13, color: 'var(--gray-light)', marginBottom: 6 }}>ABI (required)</label>
-              <textarea
-                className="blob-textarea"
-                value={abiText}
-                onChange={e => setAbiText(e.target.value)}
-                placeholder="Paste ABI JSON array..."
-                rows={4}
-              />
-              {abiError && <div className="warning" style={{ marginTop: 8 }}>{abiError}</div>}
-              <button className="btn btn-secondary" style={{ marginTop: 8, fontSize: 13 }} onClick={handleParseAbi}>
-                Parse ABI
-              </button>
-            </div>
-          )}
-
-          {/* Method selection */}
-          {availableMethods.length > 0 && (
-            <div style={{ marginBottom: 16 }}>
-              <label style={{ display: 'block', fontSize: 13, color: 'var(--gray-light)', marginBottom: 8 }}>Methods</label>
-              <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
-                <button className="btn btn-secondary" style={{ fontSize: 11, padding: '3px 8px' }} onClick={() => setSelectedMethods(new Set(availableMethods))}>
-                  Select All
-                </button>
-                <button className="btn btn-secondary" style={{ fontSize: 11, padding: '3px 8px' }} onClick={() => setSelectedMethods(new Set())}>
-                  Clear
-                </button>
-              </div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {availableMethods.map(m => (
-                  <label key={m} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13, cursor: 'pointer', padding: '4px 8px', borderRadius: 6, background: selectedMethods.has(m) ? 'var(--gray-dark)' : 'transparent' }}>
-                    <input type="checkbox" checked={selectedMethods.has(m)} onChange={() => toggleMethod(m)} />
-                    {m}
-                  </label>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <div style={{ display: 'flex', gap: 12 }}>
-            <button className="btn btn-secondary" style={{ flex: 1 }} onClick={resetForm}>Cancel</button>
-            <button
-              className="btn btn-primary"
-              style={{ flex: 1 }}
-              onClick={handleAdd}
-              disabled={!name.trim() || !address.trim() || selectedMethods.size === 0 || (contractType === 'custom' && parsedAbiMethods.length === 0)}
-            >
-              Add
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

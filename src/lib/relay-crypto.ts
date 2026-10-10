@@ -36,7 +36,7 @@ export async function importPublicKey(raw: Uint8Array): Promise<CryptoKey> {
 
 /**
  * Derive an AES-256-GCM key from ECDH shared secret + HKDF.
- * salt = session code (ASCII), info = "permafrost-relay-v1".
+ * salt = session code (ASCII), info = "otzi-relay-v1".
  */
 export async function deriveAESKey(
   myPrivateKey: CryptoKey,
@@ -61,7 +61,7 @@ export async function deriveAESKey(
 
   // Step 3: HKDF → AES-256-GCM key
   const salt = new TextEncoder().encode(sessionCode);
-  const info = new TextEncoder().encode('permafrost-relay-v1');
+  const info = new TextEncoder().encode('otzi-relay-v1');
 
   return crypto.subtle.deriveKey(
     { name: 'HKDF', hash: 'SHA-256', salt, info },

@@ -93,7 +93,7 @@ type WireMessage =
 // Session storage key
 // ---------------------------------------------------------------------------
 
-const STORAGE_KEY = 'permafrost-relay-token';
+const STORAGE_KEY = 'otzi-relay-token';
 
 function storeToken(session: string, token: string): void {
   try {
