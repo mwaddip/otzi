@@ -1,4 +1,4 @@
-module github.com/mwaddip/orange-dollar/relay
+module github.com/mwaddip/otzi/relay
 
 go 1.23
 
