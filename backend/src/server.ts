@@ -6,13 +6,11 @@ import { ConfigStore } from './lib/config-store.js';
 import { UserStore } from './lib/users.js';
 import { createAuthMiddleware } from './lib/auth.js';
 import { configRoutes } from './routes/config.js';
-import { walletRoutes } from './routes/wallet.js';
-import { txRoutes } from './routes/tx.js';
-import { balanceRoutes } from './routes/balances.js';
 import { hostingRoutes } from './routes/hosting.js';
 import { authRoutes } from './routes/auth.js';
 import { userRoutes, inviteRoutes } from './routes/users.js';
 import { btcRoutes } from './routes/btc.js';
+import { addressBookRoutes } from './routes/address-book.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT || '8080', 10);
@@ -36,25 +34,28 @@ try { store.load(); } catch (e) {
 const { requireAdmin, requireUser, requireRead } = createAuthMiddleware(store, userStore);
 
 // API routes
-app.use('/api', configRoutes(store, userStore, requireAdmin));
-app.use('/api/auth', authRoutes(userStore));
+app.use('/api', configRoutes(store, userStore, requireAdmin, requireRead));
+app.use('/api/auth', authRoutes(store, userStore));
 app.use('/api/users', userRoutes(userStore, requireAdmin));
 app.use('/api/invites', inviteRoutes(userStore, requireAdmin));
-app.use('/api/wallet', walletRoutes(store, requireAdmin));
-app.use('/api/tx', txRoutes(store, requireUser, requireAdmin));
-app.use('/api/balances', balanceRoutes(store, requireRead));
 app.use('/api/hosting', hostingRoutes(store, requireAdmin, requireRead));
-app.use('/api/btc', btcRoutes(store, requireUser));
+app.use('/api/btc', btcRoutes(store, requireUser, requireRead));
+app.use('/api/address-book', addressBookRoutes(store, requireAdmin, requireRead));
 
-// Relay session count (proxied from relay /sessions endpoint)
+// Relay session count and party limit (proxied from relay /sessions endpoint)
 app.get('/api/relay/sessions', async (_req, res) => {
   try {
     const resp = await fetch(`http://127.0.0.1:${RELAY_PORT}/sessions`);
-    const data = await resp.json();
-    res.json(data);
+    const data = await resp.json() as { active?: number; maxParties?: number };
+    res.json({ active: data.active ?? 0, maxParties: data.maxParties ?? 10 });
   } catch {
-    res.json({ active: 0 });
+    res.json({ active: 0, maxParties: 10 });
   }
+});
+
+// Unknown API routes
+app.use('/api', (_req, res) => {
+  res.status(404).json({ error: 'Not found' });
 });
 
 // Proxy WebSocket to relay

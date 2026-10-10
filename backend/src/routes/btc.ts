@@ -1,322 +1,154 @@
 import { Router, type Request, type Response, type RequestHandler } from 'express';
 import { randomBytes } from 'node:crypto';
-import { Transaction, payments, address as btcAddress, toXOnly } from '@btc-vision/bitcoin';
-import { schnorr } from '@noble/curves/secp256k1.js';
 import { ConfigStore } from '../lib/config-store.js';
-import { getProvider, getNetwork } from '../lib/opnet-client.js';
+import {
+  buildSend, finalizeSend, isValidAddress, vaultPayment,
+  InsufficientFundsError, MIN_SEND_SATS, type Prevout,
+} from '../lib/bitcoin.js';
+import { chainApiUrl, getUtxos, getBalance, broadcastTx, getFeeRates } from '../lib/esplora.js';
 
-// Cached unsigned tx for FROST signing (5-min TTL)
-interface CachedBtcTx {
-  txHex: string;
-  numInputs: number;
-  sighashes: Array<{ index: number; hash: string }>;
+interface PreparedTx {
+  tx: string;
+  prevouts: Prevout[];
   ts: number;
 }
 
-// Fee rate cache (60s TTL)
-let feeCache: { low: number; normal: number; high: number; ts: number } | null = null;
+const PREPARED_TTL = 30 * 60 * 1000;
+const BROADCAST_TTL = 60 * 60 * 1000;
 
-const MEMPOOL_FEES: Record<string, string> = {
-  mainnet: 'https://mempool.space/api/v1/fees/recommended',
-  testnet: 'https://mempool.space/signet/api/v1/fees/recommended',
-};
-
-const MEMPOOL_TX: Record<string, string> = {
-  mainnet: 'https://mempool.space/api/tx',
-  testnet: 'https://mempool.space/signet/api/tx',
-};
-
-export function btcRoutes(store: ConfigStore, requireUser: RequestHandler): Router {
+export function btcRoutes(store: ConfigStore, requireUser: RequestHandler, requireRead: RequestHandler): Router {
   const r = Router();
 
-  const txCache = new Map<string, CachedBtcTx>();
-  const broadcastLock = new Map<string, { txid?: string; error?: string; ts: number }>();
+  const prepared = new Map<string, PreparedTx>();
+  const broadcasts = new Map<string, { txid?: string; ts: number }>();
 
-  // Cleanup expired caches
   setInterval(() => {
-    const cutoff = Date.now() - 5 * 60 * 1000;
-    for (const [k, v] of txCache) { if (v.ts < cutoff) txCache.delete(k); }
-    const bCutoff = Date.now() - 60 * 60 * 1000;
-    for (const [k, v] of broadcastLock) { if (v.ts < bCutoff) broadcastLock.delete(k); }
-  }, 60 * 1000);
+    const now = Date.now();
+    for (const [k, v] of prepared) if (now - v.ts > PREPARED_TTL) prepared.delete(k);
+    for (const [k, v] of broadcasts) if (now - v.ts > BROADCAST_TTL) broadcasts.delete(k);
+  }, 60 * 1000).unref();
 
-  /** POST /api/btc/prepare — build unsigned P2TR tx, return sighashes */
-  r.post('/prepare', requireUser, async (req: Request, res: Response) => {
-    const { to, amount, feeRate } = req.body as {
-      to: string;
-      amount: number;
-      feeRate: number;
-    };
-
+  /** GET /api/btc/balance — vault balance in sats */
+  r.get('/balance', requireRead, async (_req: Request, res: Response) => {
+    const config = store.get();
+    if (!config.vault) { res.status(400).json({ error: 'No vault' }); return; }
+    const { address } = vaultPayment(config.vault, config.network);
     try {
-      if (!to || typeof to !== 'string') {
-        res.status(400).json({ error: 'Missing destination address' });
-        return;
-      }
-      if (!amount || typeof amount !== 'number' || amount <= 0 || !Number.isInteger(amount)) {
-        res.status(400).json({ error: 'Amount must be a positive integer (satoshis)' });
-        return;
-      }
-      if (!feeRate || typeof feeRate !== 'number' || feeRate <= 0) {
-        res.status(400).json({ error: 'Fee rate must be a positive number (sat/vB)' });
-        return;
-      }
-
-      const config = store.get();
-      if (!config.permafrost?.frostP2tr || !config.permafrost?.frostUntweakedAggregateKey) {
-        res.status(400).json({ error: 'No FROST keys configured' });
-        return;
-      }
-
-      const networkName = config.network;
-      const network = getNetwork(networkName);
-      const frostP2tr = config.permafrost.frostP2tr;
-      const untweakedPubKey = Buffer.from(config.permafrost.frostUntweakedAggregateKey, 'hex');
-      const internalXOnly = toXOnly(untweakedPubKey as never);
-
-      // Validate destination address
-      try {
-        btcAddress.toOutputScript(to, network);
-      } catch {
-        res.status(400).json({ error: 'Invalid destination address for this network' });
-        return;
-      }
-
-      // Fetch UTXOs
-      const provider = getProvider(networkName);
-      const utxos = await provider.utxoManager.getUTXOs({ address: frostP2tr });
-
-      // Coin selection: greedy, largest first
-      const sorted = [...utxos].sort((a, b) => (b.value > a.value ? 1 : b.value < a.value ? -1 : 0));
-
-      // Taproot key-path vsize: ~57.5 vB/input, ~43 vB/output (P2TR), ~10.5 overhead
-      const INPUT_VBYTES = 57.5;
-      const OUTPUT_VBYTES = 43;
-      const OVERHEAD_VBYTES = 10.5;
-
-      let selectedSum = 0n;
-      const selectedUtxos: typeof sorted = [];
-
-      for (const utxo of sorted) {
-        selectedUtxos.push(utxo);
-        selectedSum += utxo.value;
-
-        const estVsize = Math.ceil(OVERHEAD_VBYTES + INPUT_VBYTES * selectedUtxos.length + OUTPUT_VBYTES * 2);
-        const estFee = BigInt(Math.ceil(estVsize * feeRate));
-
-        if (selectedSum >= BigInt(amount) + estFee) break;
-      }
-
-      // Calculate fee with final input count
-      const hasChange = selectedSum > BigInt(amount);
-      const numOutputs = hasChange ? 2 : 1;
-      const vsize = Math.ceil(OVERHEAD_VBYTES + INPUT_VBYTES * selectedUtxos.length + OUTPUT_VBYTES * numOutputs);
-      const fee = BigInt(Math.ceil(vsize * feeRate));
-
-      if (selectedSum < BigInt(amount) + fee) {
-        res.status(400).json({
-          error: 'Insufficient funds',
-          available: selectedSum.toString(),
-          needed: (BigInt(amount) + fee).toString(),
-        });
-        return;
-      }
-
-      const change = selectedSum - BigInt(amount) - fee;
-
-      // Build Transaction directly (key-path only — no Psbt needed)
-      const tx = new Transaction();
-      tx.version = 2;
-
-      const p2trOutput = payments.p2tr({ internalPubkey: internalXOnly as never, network }).output!;
-
-      for (const utxo of selectedUtxos) {
-        // Transaction.addInput expects hash as Buffer (internal byte order = reversed txid)
-        const txidBuf = Buffer.from(utxo.transactionId.replace(/^0x/, ''), 'hex').reverse();
-        tx.addInput(txidBuf as never, utxo.outputIndex);
-      }
-
-      // Destination output (Satoshi is branded bigint)
-      tx.addOutput(btcAddress.toOutputScript(to, network), BigInt(amount) as never);
-
-      // Change output (skip dust: < 546 sats)
-      if (change > 546n) {
-        tx.addOutput(btcAddress.toOutputScript(frostP2tr, network), change as never);
-      }
-
-      // Compute sighashes for each input (Taproot key-path, SIGHASH_DEFAULT = 0x00)
-      const prevoutScripts = selectedUtxos.map(() => p2trOutput);
-      const prevoutValues = selectedUtxos.map(u => u.value as never);
-
-      const sighashes: Array<{ index: number; hash: string }> = [];
-      for (let i = 0; i < selectedUtxos.length; i++) {
-        const hash = tx.hashForWitnessV1(i, prevoutScripts, prevoutValues, 0x00);
-        sighashes.push({ index: i, hash: Buffer.from(hash).toString('hex') });
-      }
-
-      const challengeToken = randomBytes(16).toString('hex');
-      txCache.set(challengeToken, {
-        txHex: tx.toHex(),
-        numInputs: selectedUtxos.length,
-        sighashes,
-        ts: Date.now(),
-      });
-
-      res.json({
-        sighashes: sighashes.map(s => ({ ...s, type: 'key-path' as const })),
-        challengeToken,
-        estimatedFee: Number(fee),
-        changeAmount: Number(change > 546n ? change : 0n),
-      });
+      const balance = await getBalance(chainApiUrl(config), address);
+      res.json({ address, ...balance });
     } catch (e) {
-      console.error('[btc/prepare] error:', e);
-      res.status(500).json({ error: (e as Error).message });
+      res.status(502).json({ error: `Chain API: ${(e as Error).message}` });
     }
   });
 
-  /** POST /api/btc/broadcast — inject FROST sigs and broadcast raw tx */
-  r.post('/broadcast', requireUser, async (req: Request, res: Response) => {
-    const { challengeToken, frostSignatures } = req.body as {
-      challengeToken: string;
-      frostSignatures: Array<{ index: number; signature: string }>;
-    };
+  /** GET /api/btc/fees — fee rate estimates (sat/vB) */
+  r.get('/fees', async (_req: Request, res: Response) => {
+    if (!store.isLoaded()) { res.status(503).json({ error: 'Instance not ready' }); return; }
+    try {
+      res.json(await getFeeRates(chainApiUrl(store.get())));
+    } catch {
+      res.json({ low: 1, normal: 5, high: 10, fallback: true });
+    }
+  });
+
+  /** POST /api/btc/prepare — build an unsigned send transaction */
+  r.post('/prepare', requireUser, async (req: Request, res: Response) => {
+    const { to, amount, feeRate } = req.body as { to?: unknown; amount?: unknown; feeRate?: unknown };
+    const config = store.get();
+    if (!config.vault) { res.status(400).json({ error: 'No vault' }); return; }
+    if (typeof to !== 'string' || !isValidAddress(to.trim(), config.network)) {
+      res.status(400).json({ error: `Invalid ${config.network} destination address` });
+      return;
+    }
+    if (amount !== 'max' && (typeof amount !== 'number' || !Number.isSafeInteger(amount) || BigInt(amount) < MIN_SEND_SATS)) {
+      res.status(400).json({ error: `Amount must be an integer of at least ${MIN_SEND_SATS} sats, or "max"` });
+      return;
+    }
+    if (typeof feeRate !== 'number' || !(feeRate > 0) || feeRate > 10_000) {
+      res.status(400).json({ error: 'Fee rate must be between 0 and 10000 sat/vB' });
+      return;
+    }
+
+    const { address } = vaultPayment(config.vault, config.network);
+    let utxos;
+    try {
+      utxos = (await getUtxos(chainApiUrl(config), address)).filter(u => u.confirmed);
+    } catch (e) {
+      res.status(502).json({ error: `Chain API: ${(e as Error).message}` });
+      return;
+    }
 
     try {
-      if (!challengeToken) {
-        res.status(400).json({ error: 'Missing challengeToken' });
+      const send = buildSend({
+        utxos,
+        vault: config.vault,
+        network: config.network,
+        to: to.trim(),
+        amount: amount === 'max' ? 'max' : BigInt(amount as number),
+        feeRate,
+      });
+      const challengeToken = randomBytes(16).toString('hex');
+      prepared.set(challengeToken, { tx: send.tx, prevouts: send.prevouts, ts: Date.now() });
+      res.json({
+        challengeToken,
+        proposal: { network: config.network, tx: send.tx, prevouts: send.prevouts },
+        amount: Number(send.amount),
+        fee: Number(send.fee),
+        change: Number(send.change),
+        vsize: send.vsize,
+      });
+    } catch (e) {
+      if (e instanceof InsufficientFundsError) {
+        res.status(400).json({ error: 'Insufficient confirmed funds', available: Number(e.available), needed: Number(e.needed) });
         return;
       }
+      res.status(400).json({ error: (e as Error).message });
+    }
+  });
 
-      // Double-broadcast prevention
-      const existing = broadcastLock.get(challengeToken);
-      if (existing?.txid) {
-        res.json({ txid: existing.txid, alreadyBroadcast: true });
-        return;
-      }
-      broadcastLock.set(challengeToken, { ts: Date.now() });
+  /** POST /api/btc/broadcast — verify signatures, finalize and broadcast */
+  r.post('/broadcast', requireUser, async (req: Request, res: Response) => {
+    const { challengeToken, signatures } = req.body as {
+      challengeToken?: string;
+      signatures?: Array<{ index: number; signature: string }>;
+    };
+    if (!challengeToken) { res.status(400).json({ error: 'Missing challengeToken' }); return; }
 
-      const cached = txCache.get(challengeToken);
-      if (!cached) {
-        broadcastLock.delete(challengeToken);
-        res.status(400).json({ error: 'Prepare session expired or not found — run prepare again' });
-        return;
-      }
+    const existing = broadcasts.get(challengeToken);
+    if (existing) {
+      if (existing.txid) res.json({ txid: existing.txid, alreadyBroadcast: true });
+      else res.status(409).json({ error: 'Broadcast already in progress' });
+      return;
+    }
+    broadcasts.set(challengeToken, { ts: Date.now() });
 
-      if (!Array.isArray(frostSignatures) || frostSignatures.length !== cached.numInputs) {
-        broadcastLock.delete(challengeToken);
-        res.status(400).json({ error: `Expected ${cached.numInputs} signatures, got ${frostSignatures?.length ?? 0}` });
-        return;
-      }
+    const entry = prepared.get(challengeToken);
+    const config = store.get();
+    if (!entry || !config.vault) {
+      broadcasts.delete(challengeToken);
+      res.status(400).json({ error: 'Prepared transaction expired or not found — prepare it again' });
+      return;
+    }
 
-      // Validate all signatures are 64 bytes hex
-      for (const fs of frostSignatures) {
-        if (typeof fs.signature !== 'string' || !/^[0-9a-fA-F]{128}$/.test(fs.signature)) {
-          broadcastLock.delete(challengeToken);
-          res.status(400).json({ error: `Invalid signature at index ${fs.index}: must be 128 hex chars (64 bytes)` });
-          return;
-        }
-      }
+    let signed;
+    try {
+      if (!Array.isArray(signatures)) throw new Error('signatures must be an array');
+      signed = finalizeSend(entry.tx, entry.prevouts, signatures, vaultPayment(config.vault, config.network).outputKey);
+    } catch (e) {
+      broadcasts.delete(challengeToken);
+      res.status(400).json({ error: (e as Error).message });
+      return;
+    }
 
-      // Verify FROST signatures against sighashes before injecting
-      const config = store.get();
-      const untweakedPubKey = Buffer.from(config.permafrost!.frostUntweakedAggregateKey!, 'hex');
-      const xOnlyPub = toXOnly(untweakedPubKey as never);
-
-      for (const fs of frostSignatures) {
-        const sighash = cached.sighashes.find(s => s.index === fs.index);
-        if (!sighash) {
-          broadcastLock.delete(challengeToken);
-          res.status(400).json({ error: `No sighash for input index ${fs.index}` });
-          return;
-        }
-        const sigBytes = Buffer.from(fs.signature, 'hex');
-        const msgBytes = Buffer.from(sighash.hash, 'hex');
-        if (!schnorr.verify(sigBytes, msgBytes, xOnlyPub)) {
-          broadcastLock.delete(challengeToken);
-          res.status(400).json({ error: `BIP340 verification failed for input ${fs.index} — FROST ceremony may need to be repeated` });
-          return;
-        }
-      }
-
-      // Parse cached tx and inject verified FROST signatures as key-path witness
-      const tx = Transaction.fromHex(cached.txHex);
-      for (const fs of frostSignatures) {
-        const sig = Buffer.from(fs.signature, 'hex');
-        tx.setWitness(fs.index, [sig]);
-      }
-
-      const rawTx = tx.toHex();
-      let txid: string;
-
-      if (config.network === 'testnet') {
-        // Testnet is a Signet fork — broadcast via OPNet provider (same chain as UTXO source)
-        const provider = getProvider(config.network);
-        const txResult = await provider.sendRawTransaction(rawTx, false);
-        if (!txResult.success) {
-          throw new Error(`Broadcast failed: ${txResult.error || 'unknown'}`);
-        }
-        txid = txResult.result || tx.getId();
-      } else {
-        // Mainnet — broadcast via mempool.space (direct Bitcoin network)
-        const resp = await fetch(MEMPOOL_TX.mainnet, {
-          method: 'POST',
-          headers: { 'Content-Type': 'text/plain' },
-          body: rawTx,
-        });
-        if (!resp.ok) {
-          const errText = await resp.text();
-          throw new Error(`Broadcast failed: ${errText}`);
-        }
-        txid = (await resp.text()).trim();
-      }
-
-      txCache.delete(challengeToken);
-      broadcastLock.set(challengeToken, { txid, ts: Date.now() });
-
-      console.log(`[btc/broadcast] success: ${txid}`);
+    try {
+      const txid = await broadcastTx(chainApiUrl(config), signed.hex);
+      prepared.delete(challengeToken);
+      broadcasts.set(challengeToken, { txid, ts: Date.now() });
+      console.log(`[btc/broadcast] ${txid}`);
       res.json({ txid });
     } catch (e) {
-      console.error('[btc/broadcast] error:', e);
-      broadcastLock.delete(challengeToken);
-      res.status(500).json({ error: (e as Error).message });
-    }
-  });
-
-  /** GET /api/btc/fees — fee rate estimates from mempool.space */
-  r.get('/fees', async (_req: Request, res: Response) => {
-    try {
-      if (feeCache && Date.now() - feeCache.ts < 60_000) {
-        res.json({ low: feeCache.low, normal: feeCache.normal, high: feeCache.high });
-        return;
-      }
-
-      const config = store.get();
-      const url = MEMPOOL_FEES[config.network];
-      if (!url) {
-        res.status(500).json({ error: `No fee API for network: ${config.network}` });
-        return;
-      }
-
-      const resp = await fetch(url);
-      if (!resp.ok) throw new Error(`Fee API returned ${resp.status}`);
-
-      const data = await resp.json() as {
-        fastestFee: number;
-        halfHourFee: number;
-        hourFee: number;
-      };
-
-      feeCache = {
-        low: data.hourFee,
-        normal: data.halfHourFee,
-        high: data.fastestFee,
-        ts: Date.now(),
-      };
-
-      res.json({ low: feeCache.low, normal: feeCache.normal, high: feeCache.high });
-    } catch (e) {
-      console.error('[btc/fees] error:', e);
-      res.json({ low: 1, normal: 5, high: 10, fallback: true });
+      broadcasts.delete(challengeToken);
+      res.status(502).json({ error: `Broadcast rejected: ${(e as Error).message}` });
     }
   });
 

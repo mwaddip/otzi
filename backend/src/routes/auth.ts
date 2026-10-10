@@ -1,134 +1,136 @@
 import { Router, type Request, type Response } from 'express';
+import { createToken, createBitcoinChallenge, requestTokenInfo } from '../lib/auth.js';
+import { verifyBitcoinProof } from '../lib/credentials.js';
 import {
-  createChallenge, consumeChallenge,
-  verifyMLDSA, createToken, getTokenInfo,
-} from '../lib/auth.js';
-import type { UserStore } from '../lib/users.js';
+  passkeyRegistrationOptions, verifyPasskeyRegistration,
+  passkeyLoginOptions, verifyPasskeyLogin,
+  type RegistrationResponseJSON, type AuthenticationResponseJSON,
+} from '../lib/passkey.js';
+import type { ConfigStore } from '../lib/config-store.js';
+import type { Credential, User, UserStore } from '../lib/users.js';
 
-const BASE64_RE = /^[A-Za-z0-9+/]+=*$/;
-
-function decodeBase64(str: string): Uint8Array | null {
-  if (!str || !BASE64_RE.test(str)) return null;
-  const buf = Buffer.from(str, 'base64');
-  return buf.length > 0 ? new Uint8Array(buf) : null;
+function signedIn(res: Response, user: User): void {
+  res.json({ authenticated: true, token: createToken(user.role, user.id), role: user.role, label: user.label });
 }
 
-export function authRoutes(userStore: UserStore): Router {
+function cleanLabel(label: unknown, fallback: string): string {
+  const l = typeof label === 'string' ? label.trim().slice(0, 64) : '';
+  return l || fallback;
+}
+
+export function authRoutes(store: ConfigStore, userStore: UserStore): Router {
   const r = Router();
 
-  /** GET /api/auth/challenge — generate one-use challenge */
-  r.get('/challenge', (_req: Request, res: Response) => {
-    const challenge = createChallenge();
-    res.json({ challenge });
+  const accountsMode = () => store.isLoaded() && store.get().authMode === 'accounts';
+
+  /** Redeem an invite for a verified credential, answering the request. */
+  function redeem(res: Response, inviteCode: unknown, label: string, credential: Credential): void {
+    if (typeof inviteCode !== 'string' || !inviteCode.trim()) {
+      res.status(400).json({ error: 'inviteCode required' });
+      return;
+    }
+    try {
+      const user = userStore.redeemInvite(inviteCode.trim().toUpperCase(), label, credential);
+      if (!user) { res.status(400).json({ error: 'Invalid, expired, or exhausted invite code' }); return; }
+      signedIn(res, user);
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
+    }
+  }
+
+  /** GET /api/auth/me */
+  r.get('/me', (req: Request, res: Response) => {
+    const info = requestTokenInfo(req);
+    if (!info) { res.json({ authenticated: false }); return; }
+    const user = info.userId ? userStore.getUser(info.userId) : null;
+    res.json({ authenticated: true, role: info.role, ...(user ? { userId: user.id, label: user.label } : {}) });
   });
 
-  /** POST /api/auth/verify — verify ML-DSA sig, return token + role */
-  r.post('/verify', (req: Request, res: Response) => {
-    const { challenge, signature, publicKey, sessionCode } = req.body as {
-      challenge?: string;
-      signature?: string;  // base64-encoded ML-DSA sig
-      publicKey?: string;  // base64-encoded ML-DSA pubkey (NOT tweakedPubKey)
-      sessionCode?: string; // DKG session code — auto-registers as user if provided
-    };
-
-    if (!challenge || !signature || !publicKey) {
-      res.status(400).json({ error: 'challenge, signature, and publicKey required' });
-      return;
-    }
-
-    if (!consumeChallenge(challenge)) {
-      res.status(400).json({ error: 'Invalid or expired challenge' });
-      return;
-    }
-
-    const sigBytes = decodeBase64(signature);
-    const pubKeyBytes = decodeBase64(publicKey);
-    if (!sigBytes) { res.status(400).json({ error: 'Invalid base64 in signature' }); return; }
-    if (!pubKeyBytes) { res.status(400).json({ error: 'Invalid base64 in publicKey' }); return; }
-
-    const result = verifyMLDSA(sigBytes, pubKeyBytes, challenge);
-    if (!result.valid || !result.walletAddress) {
-      res.status(401).json({ error: result.error || 'Verification failed' });
-      return;
-    }
-
-    let user = userStore.getUser(result.walletAddress);
-
-    // Auto-register as user if a DKG session code is provided
-    if (!user && sessionCode?.trim()) {
-      try {
-        user = userStore.addUser(result.walletAddress, 'user', result.walletAddress.slice(0, 10));
-      } catch {
-        // Already exists (race condition) — try fetching again
-        user = userStore.getUser(result.walletAddress);
-      }
-    }
-
-    if (!user) {
-      res.json({ authenticated: false, needsInvite: true, address: result.walletAddress });
-      return;
-    }
-
-    const token = createToken(user.role, user.address);
-    res.json({ authenticated: true, token, role: user.role, address: user.address, label: user.label });
+  /** POST /api/auth/challenge — Bitcoin sign-in message */
+  r.post('/challenge', (req: Request, res: Response) => {
+    res.json(createBitcoinChallenge(req.headers.host || 'unknown'));
   });
 
-  /** POST /api/auth/redeem — verify sig + use invite code to register */
-  r.post('/redeem', (req: Request, res: Response) => {
-    const { challenge, signature, publicKey, inviteCode, label } = req.body as {
-      challenge?: string;
-      signature?: string;
-      publicKey?: string;
-      inviteCode?: string;
-      label?: string;
-    };
-
-    if (!challenge || !signature || !publicKey || !inviteCode) {
-      res.status(400).json({ error: 'challenge, signature, publicKey, and inviteCode required' });
+  /** POST /api/auth/bitcoin/login */
+  r.post('/bitcoin/login', (req: Request, res: Response) => {
+    if (!accountsMode()) { res.status(400).json({ error: 'Accounts are not enabled' }); return; }
+    const { address, challenge, signature } = req.body as Record<string, unknown>;
+    let credential;
+    try {
+      credential = verifyBitcoinProof(address, challenge, signature);
+    } catch (e) {
+      const msg = (e as Error).message;
+      res.status(msg === 'Signature verification failed' ? 401 : 400).json({ error: msg });
       return;
     }
+    const user = credential.type === 'bitcoin' ? userStore.findByAddress(credential.address) : null;
+    if (!user) { res.json({ authenticated: false, needsInvite: true }); return; }
+    signedIn(res, user);
+  });
 
-    if (!consumeChallenge(challenge)) {
-      res.status(400).json({ error: 'Invalid or expired challenge' });
+  /** POST /api/auth/bitcoin/register — redeem an invite with a Bitcoin address */
+  r.post('/bitcoin/register', (req: Request, res: Response) => {
+    if (!accountsMode()) { res.status(400).json({ error: 'Accounts are not enabled' }); return; }
+    const { address, challenge, signature, inviteCode, label } = req.body as Record<string, unknown>;
+    let credential;
+    try {
+      credential = verifyBitcoinProof(address, challenge, signature);
+    } catch (e) {
+      const msg = (e as Error).message;
+      res.status(msg === 'Signature verification failed' ? 401 : 400).json({ error: msg });
       return;
     }
+    redeem(res, inviteCode, cleanLabel(label, (address as string).slice(0, 12)), credential);
+  });
 
-    const sigBytes = decodeBase64(signature);
-    const pubKeyBytes = decodeBase64(publicKey);
-    if (!sigBytes || !pubKeyBytes) {
-      res.status(400).json({ error: 'Invalid base64 encoding' });
-      return;
+  /** POST /api/auth/passkey/register-options — usable before init and for invites */
+  r.post('/passkey/register-options', async (req: Request, res: Response) => {
+    if (store.isInitialized() && !accountsMode()) { res.status(400).json({ error: 'Accounts are not enabled' }); return; }
+    try {
+      const options = await passkeyRegistrationOptions(req, cleanLabel((req.body as { label?: unknown }).label, 'Ötzi user'));
+      res.json({ options });
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
     }
+  });
 
-    const result = verifyMLDSA(sigBytes, pubKeyBytes, challenge);
-    if (!result.valid || !result.walletAddress) {
-      res.status(401).json({ error: result.error || 'Verification failed' });
-      return;
-    }
-
-    const user = userStore.redeemInvite(inviteCode, result.walletAddress, label || result.walletAddress.slice(0, 10));
-    if (!user) {
+  /** POST /api/auth/passkey/register — redeem an invite with a new passkey */
+  r.post('/passkey/register', async (req: Request, res: Response) => {
+    if (!accountsMode()) { res.status(400).json({ error: 'Accounts are not enabled' }); return; }
+    const { response, inviteCode, label } = req.body as { response?: RegistrationResponseJSON; inviteCode?: unknown; label?: unknown };
+    if (typeof inviteCode !== 'string' || !userStore.peekInvite(inviteCode.trim().toUpperCase())) {
       res.status(400).json({ error: 'Invalid, expired, or exhausted invite code' });
       return;
     }
-
-    const token = createToken(user.role, user.address);
-    res.json({ authenticated: true, token, role: user.role, address: user.address, label: user.label });
+    let credential;
+    try {
+      credential = await verifyPasskeyRegistration(req, response as RegistrationResponseJSON);
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
+      return;
+    }
+    redeem(res, inviteCode, cleanLabel(label, 'Passkey user'), credential);
   });
 
-  /** GET /api/auth/me — return current session info */
-  r.get('/me', (req: Request, res: Response) => {
-    const auth = req.headers.authorization;
-    if (!auth?.startsWith('Bearer ')) {
-      res.json({ authenticated: false });
-      return;
+  /** POST /api/auth/passkey/login-options */
+  r.post('/passkey/login-options', async (req: Request, res: Response) => {
+    if (!accountsMode()) { res.status(400).json({ error: 'Accounts are not enabled' }); return; }
+    try {
+      res.json({ options: await passkeyLoginOptions(req) });
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
     }
-    const info = getTokenInfo(auth.slice(7));
-    if (!info) {
-      res.json({ authenticated: false });
-      return;
+  });
+
+  /** POST /api/auth/passkey/login */
+  r.post('/passkey/login', async (req: Request, res: Response) => {
+    if (!accountsMode()) { res.status(400).json({ error: 'Accounts are not enabled' }); return; }
+    try {
+      const user = await verifyPasskeyLogin(req, (req.body as { response: AuthenticationResponseJSON }).response, userStore);
+      signedIn(res, user);
+    } catch (e) {
+      res.status(401).json({ error: (e as Error).message });
     }
-    res.json({ authenticated: true, role: info.role, address: info.address });
   });
 
   return r;

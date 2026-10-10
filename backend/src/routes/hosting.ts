@@ -2,7 +2,8 @@ import { Router, type Request, type Response, type RequestHandler } from 'expres
 import { writeFileSync } from 'node:fs';
 import { execSync, spawn } from 'node:child_process';
 import { ConfigStore } from '../lib/config-store.js';
-import { sanitizeConfig, type HostingConfig } from '../lib/types.js';
+import type { HostingConfig, VaultConfig } from '../lib/types.js';
+import { publicConfig } from '../lib/public-config.js';
 
 const CADDYFILE = process.env.CADDYFILE_PATH || '/etc/caddy/Caddyfile';
 const BACKEND_PORT = parseInt(process.env.PORT || '8080', 10);
@@ -115,16 +116,16 @@ export function hostingRoutes(store: ConfigStore, requireAdmin: RequestHandler, 
           hosting.httpsStatus = httpsEnabled ? 'error' : undefined;
           hosting.httpsError = err;
           store.update({ hosting });
-          res.json({ ok: true, warning: err, config: sanitizeConfig(store.get()) });
+          res.json({ ok: true, warning: err, config: publicConfig(store.get()) });
         } else {
           if (httpsEnabled) {
             hosting.httpsStatus = 'active';
             store.update({ hosting });
           }
-          res.json({ ok: true, config: sanitizeConfig(store.get()) });
+          res.json({ ok: true, config: publicConfig(store.get()) });
         }
       } else {
-        res.json({ ok: true, config: sanitizeConfig(store.get()) });
+        res.json({ ok: true, config: publicConfig(store.get()) });
       }
     } catch (e) {
       res.status(500).json({ error: (e as Error).message });
@@ -134,7 +135,7 @@ export function hostingRoutes(store: ConfigStore, requireAdmin: RequestHandler, 
   /** DELETE /api/hosting — remove domain config, revert to default */
   r.delete('/', requireAdmin, (_req: Request, res: Response) => {
     try {
-      store.update({ hosting: undefined } as Partial<import('../lib/types.js').VaultConfig>);
+      store.update({ hosting: undefined } as Partial<VaultConfig>);
 
       if (hasCaddy) {
         writeCaddyfile({ domain: '', httpsEnabled: false });
