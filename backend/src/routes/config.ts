@@ -215,7 +215,12 @@ export function configRoutes(store: ConfigStore, userStore: UserStore, requireAd
 
     try {
       store.replace(config, config.storageMode === 'encrypted-persistent' ? password : undefined);
-      userStore.replace(backup.users ?? { users: [], invites: [], settings: { everybodyCanRead: true } });
+      // Users exist only in accounts mode; password-mode instances keep no users file
+      if (config.authMode === 'accounts') {
+        userStore.replace(backup.users ?? { users: [], invites: [], settings: { everybodyCanRead: true } });
+      } else {
+        userStore.reset();
+      }
       revokeAllTokens();
       res.json({ ok: true });
     } catch (e) {

@@ -13,6 +13,15 @@ function signedIn(res: Response, user: User): void {
   res.json({ authenticated: true, token: createToken(user.role, user.id), role: user.role, label: user.label });
 }
 
+/** Host of the page making the request (what the user sees in the address bar). */
+function pageHost(req: Request): string {
+  try {
+    if (req.headers.origin) return new URL(req.headers.origin).host;
+  } catch { /* fall through */ }
+  const forwarded = req.headers['x-forwarded-host'];
+  return (Array.isArray(forwarded) ? forwarded[0] : forwarded) || req.headers.host || 'unknown';
+}
+
 function cleanLabel(label: unknown, fallback: string): string {
   const l = typeof label === 'string' ? label.trim().slice(0, 64) : '';
   return l || fallback;
@@ -48,7 +57,7 @@ export function authRoutes(store: ConfigStore, userStore: UserStore): Router {
 
   /** POST /api/auth/challenge — Bitcoin sign-in message */
   r.post('/challenge', (req: Request, res: Response) => {
-    res.json(createBitcoinChallenge(req.headers.host || 'unknown'));
+    res.json(createBitcoinChallenge(pageHost(req)));
   });
 
   /** POST /api/auth/bitcoin/login */
