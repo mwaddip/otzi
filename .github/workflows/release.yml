@@ -27,6 +27,12 @@ jobs:
       - name: Build backend
         run: cd backend && npm ci && npx tsc
 
+      - name: Test
+        run: |
+          npm test
+          (cd backend && npm test)
+          (cd relay && go test ./...)
+
       - name: Build relay (linux/amd64)
         run: |
           cd relay
@@ -44,7 +50,6 @@ jobs:
           cp -r dist staging/dist
           mkdir -p staging/backend
           cp -r backend/dist/* staging/backend/
-          # Dereference symlinks (workspace links like @btc-vision/post-quantum)
           cp -rL backend/node_modules staging/backend/node_modules
           cp relay/relay staging/relay
           chmod +x staging/relay
