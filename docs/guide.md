@@ -56,16 +56,16 @@ An admin who has a share file of an existing vault can instead choose **Use exis
 2. Enter or pick the **recipient** from the address book.
 3. Enter the **amount** (BTC, mBTC, µBTC or sats), or click **Max** to send everything.
 4. Pick a **fee rate** (Low / Normal / High from current estimates, or Custom).
-5. Click **Review**. Check recipient, amount, fee and change.
-6. Load your **share file** and password, then **Approve & open session**.
-7. Send the session link to T−1 co-signers.
+5. Click **Review**. Check recipient, amount, fee and change, then **Approve & sign**.
+6. Load your **share file** and password. A signing session opens.
+7. Send the session link to T−1 co-signers and compare the session fingerprint with them.
 
 ### Co-signer
 
 1. Open the session link (or click **Join** and enter the code).
 2. Load your share file and password.
 3. Review what the transaction pays: each recipient (with its address book label), the change returning to the vault, and the fee.
-4. Click **Approve** to sign, or **Reject** to stop the session.
+4. Click **Approve & sign**, or **Reject** to stop the session.
 
 Your browser computes the transaction's signature hashes itself from the transaction you reviewed.
 
@@ -116,7 +116,7 @@ Co-signing never requires an account: a session link and a share file are enough
 ### Signing in
 
 - **Passkey** — click **Sign in with passkey** and confirm on your device.
-- **Bitcoin wallet** — click **Sign in with Bitcoin wallet**. A detected browser wallet (Unisat, OKX) signs the challenge directly. Any other wallet works too: copy the shown message, sign it in your wallet (Sparrow, Electrum, Bitcoin Core, a hardware wallet), and paste the address and signature. BIP-322 and legacy signmessage signatures are accepted.
+- **Bitcoin wallet** — a detected browser wallet (Unisat, OKX) signs the challenge directly with **Sign in with Unisat** / **Sign in with OKX Wallet**. Any other wallet works too: choose **Sign in with any Bitcoin wallet**, copy the shown message, sign it in your wallet (Sparrow, Electrum, Bitcoin Core, a hardware wallet), and paste the address and signature. BIP-322 and legacy signmessage signatures are accepted.
 
 ### Adding users
 
