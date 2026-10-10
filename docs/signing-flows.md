@@ -17,7 +17,7 @@ Creates the vault's FROST key (secp256k1, BIP340/BIP341). All N parties take par
  │                                                                     │
  │  ① JOIN                                                             │
  │  Create session (T, N) ───────────────────► Join with code          │
- │  All parties connected: compare session fingerprint                 │
+ │  All parties connected: compare session fingerprint, confirm        │
  │  Broadcast session config ────────────────► Accept (t, n, network)  │
  │                                                                     │
  │  ② COMMIT — FROST DKG round 1                                       │
@@ -38,6 +38,7 @@ Creates the vault's FROST key (secp256k1, BIP340/BIP341). All N parties take par
  │  FROST-sign M with all N parties (2 rounds)                         │
  │  Aggregate + verify    ◄════════════════► Aggregate + verify        │
  │  under own key                             under own key            │
+ │  BARRIER:verify        ◄════════════════► BARRIER:verify            │
  │  · Any inconsistency → error naming the offending party             │
  │                                                                     │
  │  ⑤ COMPLETE                                                         │

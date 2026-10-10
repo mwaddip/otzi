@@ -39,9 +39,9 @@ With admin-password sign-in, choose how the server keeps its configuration: pers
 
 1. One party chooses the **threshold** (T) and **number of parties** (N) and clicks **Create Session**.
 2. Share the session link (or 6-character code) with the other N−1 parties.
-3. Once everyone has joined, compare the **session fingerprint** with each other.
-4. The ceremony runs automatically: **Commit**, **Shares**, **Verify**. Do not refresh the page while it runs.
-5. On **Complete**, every party sees the vault address. Compare it with each other.
+3. Once everyone has joined, compare the **session fingerprint** with each other (read it out on a call, for example) and click **Fingerprint matches**. Nothing secret is sent before you confirm.
+4. The ceremony runs: **Commit**, **Shares**, **Verify**. Do not refresh the page while it runs.
+5. On **Complete** — reached only once every party has verified the new key — everyone sees the vault address. Compare it with each other.
 6. Each party clicks **Download Share File**, chooses a password, and stores the file safely.
 
 If any party misbehaves or a message is corrupted, the ceremony stops with an error naming the party at fault.
@@ -64,7 +64,7 @@ An admin who has a share file of an existing vault can instead choose **Use exis
 
 1. Open the session link (or click **Join** and enter the code).
 2. Load your share file and password.
-3. Review what the transaction pays: each recipient (with its address book label), the change returning to the vault, and the fee.
+3. Review what the transaction pays: each recipient (with its address book label), the change returning to the vault, and the fee. Compare the session fingerprint with the initiator.
 4. Click **Approve & sign**, or **Reject** to stop the session.
 
 Your browser computes the transaction's signature hashes itself from the transaction you reviewed.

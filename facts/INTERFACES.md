@@ -225,6 +225,7 @@ interface SharePayload {
     untweakedVerifyingShare: string; // 33-byte SEC1 hex
   };
   publicKeyPackage: VaultKey;        // §1
+  network: NetworkName;              // equals the header network
 }
 ```
 
@@ -243,7 +244,7 @@ Download filename: `otzi-share-<network>-p<partyId+1>-<last 8 chars of vault add
 |---|---|
 | **Precondition** | `file` parsed from JSON. |
 | **Postcondition** | Returns `{ network, internalKey, partyId, threshold, parties, keyPackage, publicKeyPackage }` with frots-native types (bigints, `Uint8Array`s, `Map`s). Every check below has passed. |
-| **Checks** | `version === 4`. `keyPackage.identifier === partyId + 1`. `keyPackage.untweakedVerifyingKey`, `publicKeyPackage.untweakedVerifyingKey` and `internalKey` are equal. `keyPackage.verifyingKey === publicKeyPackage.verifyingKey`. `keyPackage.verifyingShare === publicKeyPackage.verifyingShares[identifier]`. `G·signingShare === verifyingShare` and `G·untweakedSigningShare === untweakedVerifyingShare`. `minSigners === threshold`. Share count `=== parties`. |
+| **Checks** | `version === 4`. Payload `network` equals the header `network`. `keyPackage.identifier === partyId + 1`. `keyPackage.untweakedVerifyingKey`, `publicKeyPackage.untweakedVerifyingKey` and `internalKey` are equal. `keyPackage.verifyingKey === publicKeyPackage.verifyingKey`. `keyPackage.verifyingShare === publicKeyPackage.verifyingShares[identifier]`. `G·signingShare === verifyingShare` and `G·untweakedSigningShare === untweakedVerifyingShare`. `minSigners === threshold`. Share count `=== parties`. |
 | **Exception** | Wrong password (GCM failure); `'Unsupported share file version'`; `'Share file is corrupted'` on any failed check. |
 
 ### Vault membership
@@ -301,10 +302,10 @@ over one relay session. No party ever holds another party's share.
 
 | Step | Action | Advances when |
 |---|---|---|
-| `join` | Party 0 creates a relay session for N parties; others join with the session code. On relay `ready`, party 0 generates a 32-byte session ID and broadcasts the `session` blob. Joiners accept the `session` blob only from party 0 and only if `network` equals their instance network. | Session config known. |
+| `join` | Party 0 creates a relay session for N parties; others join with the session code. On relay `ready` every party shows the session fingerprint (§9); parties compare it out of band and each confirms it with **Fingerprint matches**. After confirming, party 0 generates a 32-byte session ID and broadcasts the `session` blob. Joiners accept the `session` blob only from party 0 and only if `network` equals their instance network. | Own fingerprint confirmation given and session config known. |
 | `commit` | `dkgRound1(id, N, T, rng)`; broadcast `frost-r1`. | All N round-1 packages collected (own included), then `BARRIER:commit:<partyId>` received from all N. |
 | `shares` | `dkgRound2(secret, received)` (verifies every proof of knowledge); send one private `frost-r2` per peer. | N−1 round-2 packages collected, then `BARRIER:shares:<partyId>` received from all N. |
-| `verify` | `dkgFinalize(...)` (verifies every received share). Then all N parties FROST-sign the verification message `M` (below) with `tweaked: true`: broadcast one `frost-sign-r1` commitment, after N commitments broadcast one `frost-sign-r2` share, after N shares each party runs `signAggregate` with its own full `publicKeyPackage` and checks the signature with `verifySignature(sig, M, verifyingKey)`. | Own aggregate signature verifies. |
+| `verify` | `dkgFinalize(...)` (verifies every received share). Then all N parties FROST-sign the verification message `M` (below) with `tweaked: true`: broadcast one `frost-sign-r1` commitment, after N commitments broadcast one `frost-sign-r2` share (the nonces are discarded immediately after), after N shares each party runs `signAggregate` with its own full `publicKeyPackage` and checks the signature with `verifySignature(sig, M, verifyingKey)`. When its own aggregate verifies, the party sends `BARRIER:verify:<partyId>`. | Own aggregate signature verifies, then `BARRIER:verify:<partyId>` received from all N. |
 | `complete` | Shows the vault address, session fingerprint and a share-file download. | — |
 
 ### Verification message
@@ -320,8 +321,10 @@ Each party computes `M` from its own view of the ceremony.
 
 ### Postconditions
 
-- On success every party holds a `keyPackage` for the same vault key, and has
-  proven it by contributing to a valid signature under that key.
+- On success every party holds a `keyPackage` for the same vault key, has
+  proven it by contributing to a valid signature under that key, and knows that
+  every other party verified that signature too. No party reaches `complete`
+  (and no vault is saved) while any party is still unverified.
 - A party that sent inconsistent commitments or shares makes `dkgRound2`,
   `dkgFinalize` or the verify aggregation fail; frots' cheater detection names
   the offending identifier in the error.
@@ -337,10 +340,14 @@ is saved with `POST /api/dkg/save`.
 ### Invariants
 
 - Ceremony state lives only in browser memory. A page refresh aborts the ceremony.
-- Barrier messages are `BARRIER:<step>:<partyId>`, accepted only from that party.
+- No round-2 share leaves a party's browser before that party confirmed the
+  session fingerprint.
+- Barrier messages are `BARRIER:<step>:<partyId>` (`commit`, `shares`, `verify`),
+  accepted only from that party.
 - Every 3 s each party re-sends everything it has produced so far (session config,
-  round-1 package, private round-2 packages, barriers, verify commitment and share);
-  receivers ignore duplicates, so a lost relay message cannot stall the ceremony.
+  round-1 package, private round-2 packages, barriers, verify commitment and share),
+  including after `complete` until the session closes; receivers ignore
+  duplicates, so a lost relay message cannot stall the ceremony.
 - A round-1 package must carry exactly T commitments.
 - The creator's relay session reports `maxParties`; the wizard offers N up to it.
 
@@ -367,12 +374,13 @@ per sighash, batched in one ceremony.
 | **Props** | `sighashes`, `share: DecryptedShare`, `isLeader`, `relayClient` (ready), `onSignaturesReady(sigs)`, `onCancel`. |
 | **Precondition** | Every signer computed the same `sighashes` independently (§8). |
 | **Round 1** | For each sighash: `signRound1(keyPackage, rng)`. Broadcast one `frost-sign-r1` blob carrying all commitments. |
-| **Round 2** | After `T` commitment sets: for each sighash `signRound2(keyPackage, nonces, sighash, commitments, { tweaked: true })`. Broadcast one `frost-sign-r2` blob. |
+| **Round 2** | Runs at most once per component instance (a flag set synchronously before any work), with exactly the `T` commitment sets of the session's `T` participants, frozen at that moment: for each sighash `signRound2(keyPackage, nonces, sighash, commitments, { tweaked: true })`. The nonces are wiped right after. Broadcast one `frost-sign-r2` blob. |
 | **Aggregate** | Leader only, after `T` share sets: `signAggregate(shares, sighash, commitments, publicKeyPackage, { tweaked: true })` with the full public key package from the share file. Broadcasts `FROST-COMPLETE:` + JSON signature array. |
 | **Joiner completion** | On `FROST-COMPLETE:` from the leader, the joiner verifies every signature with `verifySignature(sig, sighash, verifyingKey)` and reports failure instead of completing if any signature is invalid. |
 | **State sync** | `FROST-STATE:<partyId>:<round>:<sentRounds>` every 500 ms and on change. Receiving a peer's state re-sends this party's blob for the peer's round. Joiners follow the leader's round. |
 | **Envelope sid** | The first sighash. Blobs with another sid are ignored. |
-| **Collection** | Blobs are keyed by the vault party ID they carry (relay IDs follow join order). A set is accepted once per party, only with one entry per sighash and identifiers equal to that party's FROST identifier. Commitments and shares are passed to frots sorted by identifier. |
+| **Collection** | Each relay sender is bound to the vault party ID of its first blob; a vault party ID is bound to one relay sender. A blob whose party ID differs from its sender's binding, or a second sender claiming a bound party ID, aborts the ceremony (`'Two session participants claim party X'`). Party IDs must exist in `publicKeyPackage.verifyingShares`. A set is accepted once per sender, only with one entry per sighash and identifiers equal to the claimed party's FROST identifier. Commitments and shares are passed to frots sorted by identifier. |
+| **Abort** | `ABORT:` from the leader, or the leader leaving the relay session before completion, ends the ceremony for joiners with a message. |
 
 ---
 
@@ -399,7 +407,8 @@ interface SendProposal {
 |---|---|---|
 | `PROPOSAL:` + base64(JSON `SendProposal`) | leader (party 0) → all | Sent on relay `ready` and in answer to every `PROPOSAL-REQ`. |
 | `PROPOSAL-REQ:<partyId>` | joiner → all | Sent every 2 s until a proposal is received. |
-| `REJECT:<partyId>` | joiner → all | The joiner declined. The leader shows the rejection and ends the session. |
+| `REJECT:<partyId>` | joiner → all | The joiner declined. The leader shows the rejection, sends `ABORT:rejected`, and closes the session. |
+| `ABORT:<reason>` | leader → all | The leader ended the session. Joiners stop signing and show the reason. |
 
 Joiners accept `PROPOSAL:` only from party 0.
 
@@ -417,7 +426,8 @@ Joiners accept `PROPOSAL:` only from party 0.
 - The leader reviews the analysis of the prepared transaction before creating
   the signing session, and again against its share file once loaded.
 - Each joiner reviews the analysis after loading its share file and receiving the
-  proposal. Signing starts only after the joiner clicks **Approve**.
+  proposal. The approval screen shows the session fingerprint to compare with the
+  initiator. Signing starts only after the joiner clicks **Approve**.
 - Recipients that appear in the address book are shown with their label.
 - Joiners derive the transaction ID from the unsigned transaction.
 
@@ -437,6 +447,9 @@ E2E encrypted WebSocket client for ceremony coordination.
 - After `isReady`, `peerKeys` holds one AES-256-GCM key per peer, derived by
   ECDH (P-256).
 - Messages arriving before `isReady` are queued and processed after the keys exist.
+- A `ready` message whose public key for this party differs from this party's own
+  ECDH public key is rejected: the client emits `'Relay returned a wrong key for
+  this party — possible interception'` and closes.
 - `closed === true` after `close()`; reconnection is disabled.
 
 ### Methods
@@ -456,8 +469,11 @@ page reload the keys are gone and the client emits `'Encryption keys lost'`.
 
 ### Session fingerprint
 
-`sessionFingerprint(pubkeys)` hashes all parties' ECDH public keys in party
-order. Parties compare it to detect a relay that substitutes keys.
+`sessionFingerprint(pubkeys)` is the first 96 bits of SHA-256 over all parties'
+ECDH public keys in party order, shown as six groups of four hex digits
+(`xxxx-xxxx-xxxx-xxxx-xxxx-xxxx`). Parties compare it to detect a relay that
+substitutes keys; with every party's own key checked, a substituting relay
+produces different fingerprints for different parties.
 
 ---
 
@@ -720,6 +736,10 @@ Joining a relay session with a `?session=CODE` link needs no sign-in in either m
 
 Every guard returns 503 `'Instance not ready'` while no config is loaded (fresh or locked).
 
+A token that carries a `userId` takes its role from the user store on every
+request: a removed user's tokens are invalid, and a role change applies
+immediately. `GET /api/auth/me` and admin checks in routes use the same lookup.
+
 ### Challenges
 
 - One-use, 32 random bytes hex, valid 5 minutes.
@@ -727,6 +747,9 @@ Every guard returns 503 `'Instance not ready'` while no config is loaded (fresh 
   `Sign in to Otzi\nHost: <host>\nChallenge: <challenge>`, where `<host>` is the
   host of the request's `Origin` header (the page the user is on), falling back
   to `X-Forwarded-Host`, then `Host`.
+- When hosting is configured, `<host>` must equal the configured domain (with
+  `:port` unless the port is 80 or 443); a challenge for any other host is refused
+  with 400, so a look-alike site cannot obtain a message naming itself.
 
 ### Credentials (users.json)
 
@@ -776,7 +799,7 @@ type CredentialProof =
 | Route | Contract |
 |---|---|
 | `GET /api/auth/me` | `{ authenticated: false }` or `{ authenticated: true, role, userId?, label? }`. |
-| `POST /api/auth/challenge` | Returns `{ challenge, message }` (§16). |
+| `POST /api/auth/challenge` | Returns `{ challenge, message }` (§16). 400 when hosting is configured and the requesting host differs. |
 | `POST /api/auth/bitcoin/login` | Body `{ address, challenge, signature }`. Challenge consumed; signature verified over its message. Known address → `{ authenticated: true, token, role, label }`. Unknown address → `{ authenticated: false, needsInvite: true }`. 400 bad challenge, 401 bad signature. |
 | `POST /api/auth/bitcoin/register` | Body `{ address, challenge, signature, inviteCode, label? }`. Verified as above; invite redeemed; user created → `{ authenticated: true, token, role, label }`. 400 invalid invite or address already registered. |
 | `POST /api/auth/passkey/register-options` | Body `{ label? }`. Returns `{ options }` for `startRegistration`; challenge stored server-side. Usable on a fresh instance (for `POST /api/init`). |
@@ -840,8 +863,9 @@ type CredentialProof =
 2. **Share encryption.** Share files are encrypted in the browser (§3). Share
    passwords never leave the browser.
 3. **Relay E2E encryption.** Relay payloads are encrypted per peer with ECDH-derived
-   AES keys. The relay forwards ciphertext only. Parties compare the session
-   fingerprint.
+   AES keys. The relay forwards ciphertext only. Each client checks its own key in
+   the relay's key map; parties compare a 96-bit session fingerprint, and DKG
+   parties confirm it before any secret share is sent.
 4. **Signer approval.** Every signer computes sighashes from the transaction it
    reviewed and approved (§8). No party signs a hash it did not derive itself.
 5. **Ceremony consistency.** The DKG ends with a signature by all N parties under
@@ -851,6 +875,8 @@ type CredentialProof =
 7. **Broadcast idempotency.** One broadcast per prepared transaction.
 8. **Vault binding.** A share file is used only with the vault whose network and
    internal key it carries (§4).
+9. **Single-use nonces.** Every FROST nonce pair is used for exactly one
+   `signRound2` call and wiped afterwards (§6, §7).
 
 ### State machine (instance lifecycle)
 
