@@ -12,8 +12,9 @@ Self-hosted threshold Bitcoin vault.
 
 1. **One party creates** a session, choosing the threshold T and the number of parties N.
 2. **The others join** with the session code or link.
-3. The ceremony runs three steps over the encrypted relay: **Commit** and **Shares** (the two FROST key generation rounds), then **Verify**, where all N parties sign a transcript message with the new key to prove everyone ended up with the same, working key.
-4. Each party **downloads a password-encrypted share file** and checks that the vault address shown matches everyone else's.
+3. Every party compares the **session fingerprint** with the others (on a call, for example) and confirms it. Nothing secret is sent before a party confirms.
+4. The ceremony runs three steps over the encrypted relay: **Commit** and **Shares** (the two FROST key generation rounds), then **Verify**, where all N parties sign a transcript message with the new key to prove everyone ended up with the same, working key. The ceremony completes only once every party has verified.
+5. Each party **downloads a password-encrypted share file** and checks that the vault address shown matches everyone else's.
 
 The vault address is a standard key-path Taproot address (`bc1p…` / `tb1p…`). Fund it from any wallet.
 
@@ -21,7 +22,7 @@ The vault address is a standard key-path Taproot address (`bc1p…` / `tb1p…`)
 
 1. A user enters a **recipient** (typed or picked from the address book), an **amount** (BTC, mBTC, µBTC or sats, or "max") and a **fee rate**.
 2. The server builds the unsigned transaction from the vault's confirmed coins. The initiator **reviews** recipient, amount, fee and change, loads their share file and opens a signing session.
-3. Each co-signer joins with the session code and their share file. Their browser receives the unsigned transaction, decodes it, and shows exactly what it pays. They **approve or reject**. Every signer computes the transaction's signature hashes itself.
+3. Each co-signer joins with the session code and their share file. Their browser receives the unsigned transaction, decodes it, and shows exactly what it pays, next to the session fingerprint to compare with the initiator. They **approve or reject**; a rejection ends the session for everyone. Every signer computes the transaction's signature hashes itself.
 4. Two FROST rounds produce one Schnorr signature per input. The server verifies every signature and broadcasts the transaction. Transactions signal replace-by-fee.
 
 ### Address book
@@ -30,7 +31,7 @@ Name the addresses you pay. Labels appear in the send form and on every co-signe
 
 ### Relay
 
-All ceremony messages pass through an **end-to-end encrypted WebSocket relay** built into the app. The relay only forwards ciphertext. Each session shows a fingerprint that all parties can compare.
+All ceremony messages pass through an **end-to-end encrypted WebSocket relay** built into the app. The relay only forwards ciphertext. Each browser checks that the relay reports its own key unchanged, and each session shows a 96-bit fingerprint of all parties' keys (`xxxx-xxxx-xxxx-xxxx-xxxx-xxxx`). A relay that substitutes keys produces different fingerprints for different parties.
 
 ## Install
 
@@ -218,8 +219,9 @@ Tests: `npm test` (frontend libraries), `cd backend && npm test`, `cd relay && g
 
 - **Threshold signing**: FROST (RFC 9591, secp256k1-SHA256-TR) produces standard BIP340 Schnorr signatures. No single party holds the private key.
 - **Signers see what they sign**: every co-signer decodes the unsigned transaction, reviews recipients, amount and fee, and computes the signature hashes itself before approving.
-- **Verified key generation**: the DKG ends with all N parties signing under the new key; inconsistent or cheating parties are detected and named.
-- **E2E relay encryption**: ECDH (P-256) + AES-256-GCM per peer. The relay only forwards ciphertext.
+- **Verified key generation**: the DKG ends with all N parties signing under the new key and completes only once every party has verified; inconsistent or cheating parties are detected and named.
+- **E2E relay encryption**: ECDH (P-256) + AES-256-GCM per peer. The relay only forwards ciphertext. Each client checks its own key in the relay's key map; parties compare a 96-bit session fingerprint, and DKG parties confirm it before any secret share is sent.
+- **Single-use nonces**: every FROST nonce pair signs exactly once, over a commitment list fixed to the session's participants. A co-signer impersonating another aborts the session.
 - **Share file encryption**: AES-256-GCM with a PBKDF2-derived key (600k iterations, SHA-256), in the browser. Share passwords never leave the browser.
 - **No secrets on the server**: the server stores public key data only.
 - **Pre-broadcast verification**: the server verifies every Schnorr signature before broadcasting, and broadcasts each prepared transaction at most once.
