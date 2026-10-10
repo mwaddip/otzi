@@ -337,7 +337,12 @@ is saved with `POST /api/dkg/save`.
 ### Invariants
 
 - Ceremony state lives only in browser memory. A page refresh aborts the ceremony.
-- Barrier messages are `BARRIER:<step>:<partyId>`.
+- Barrier messages are `BARRIER:<step>:<partyId>`, accepted only from that party.
+- Every 3 s each party re-sends everything it has produced so far (session config,
+  round-1 package, private round-2 packages, barriers, verify commitment and share);
+  receivers ignore duplicates, so a lost relay message cannot stall the ceremony.
+- A round-1 package must carry exactly T commitments.
+- The creator's relay session reports `maxParties`; the wizard offers N up to it.
 
 ---
 
@@ -359,20 +364,21 @@ per sighash, batched in one ceremony.
 
 | Aspect | Contract |
 |---|---|
-| **Props** | `sighashes`, `share: DecryptedShare`, `isLeader`, `relayClient`, `relayReady`, `onSignaturesReady(sigs)`, `onCancel`. |
+| **Props** | `sighashes`, `share: DecryptedShare`, `isLeader`, `relayClient` (ready), `onSignaturesReady(sigs)`, `onCancel`. |
 | **Precondition** | Every signer computed the same `sighashes` independently (§8). |
 | **Round 1** | For each sighash: `signRound1(keyPackage, rng)`. Broadcast one `frost-sign-r1` blob carrying all commitments. |
 | **Round 2** | After `T` commitment sets: for each sighash `signRound2(keyPackage, nonces, sighash, commitments, { tweaked: true })`. Broadcast one `frost-sign-r2` blob. |
 | **Aggregate** | Leader only, after `T` share sets: `signAggregate(shares, sighash, commitments, publicKeyPackage, { tweaked: true })` with the full public key package from the share file. Broadcasts `FROST-COMPLETE:` + JSON signature array. |
 | **Joiner completion** | On `FROST-COMPLETE:` from the leader, the joiner verifies every signature with `verifySignature(sig, sighash, verifyingKey)` and reports failure instead of completing if any signature is invalid. |
 | **State sync** | `FROST-STATE:<partyId>:<round>:<sentRounds>` every 500 ms and on change. Receiving a peer's state re-sends this party's blob for the peer's round. Joiners follow the leader's round. |
-| **Envelope sid** | The first sighash. |
+| **Envelope sid** | The first sighash. Blobs with another sid are ignored. |
+| **Collection** | Blobs are keyed by the vault party ID they carry (relay IDs follow join order). A set is accepted once per party, only with one entry per sighash and identifiers equal to that party's FROST identifier. Commitments and shares are passed to frots sorted by identifier. |
 
 ---
 
 ## 8. Send Proposal Protocol
 
-**Modules:** `src/components/VaultPage.tsx`, `src/components/ProposalReview.tsx`, `src/lib/bitcoin.ts`
+**Modules:** `src/components/SendSession.tsx`, `src/components/ProposalReview.tsx`, `src/lib/bitcoin.ts`
 
 Every signer sees and approves exactly what it signs. Sighashes are computed by
 each signer from the transaction itself.
@@ -567,7 +573,7 @@ Non-2xx responses throw `Error('<status> <body>')`.
 | Aspect | Contract |
 |---|---|
 | **Precondition** | `encrypted`, `password`. On an initialized instance: an admin token. |
-| **Postcondition** | Backup decrypted; `config` replaces the current config (the backup password becomes the storage password when the backup's storage mode is `encrypted-persistent`); users, invites and settings replace the user store. Returns `{ ok: true }`. |
+| **Postcondition** | Backup decrypted; `config` replaces the current config (the backup password becomes the storage password when the backup's storage mode is `encrypted-persistent`). In accounts mode, users, invites and settings replace the user store; in password mode the user store is emptied and no users file exists. All session tokens are revoked. Returns `{ ok: true }`. |
 | **Error** | 401 missing admin token, or wrong password / corrupted backup; 400 invalid backup format. |
 
 ### `POST /api/reset` — admin
@@ -718,7 +724,9 @@ Every guard returns 503 `'Instance not ready'` while no config is loaded (fresh 
 
 - One-use, 32 random bytes hex, valid 5 minutes.
 - Bitcoin sign-in message, built by the server when issuing the challenge:
-  `Sign in to Otzi\nHost: <request host>\nChallenge: <challenge>`.
+  `Sign in to Otzi\nHost: <host>\nChallenge: <challenge>`, where `<host>` is the
+  host of the request's `Origin` header (the page the user is on), falling back
+  to `X-Forwarded-Host`, then `Host`.
 
 ### Credentials (users.json)
 
@@ -816,7 +824,8 @@ type CredentialProof =
 - Every request sends `Content-Type: application/json` and, when a session token
   is stored, `Authorization: Bearer <token>`.
 - Non-2xx responses throw `Error` with the server's `error` field or `HTTP <status>`.
-- The session token and role live in `sessionStorage`.
+- The session token and role live in `sessionStorage`. A 401 response to a request
+  that carried a token clears the stored session.
 - `RELAY_URL` is `VITE_RELAY_URL` when set, otherwise `ws(s)://<current host>/ws`.
 
 ---

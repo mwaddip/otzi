@@ -169,8 +169,8 @@ Balances, coins, fee estimates and broadcasting use an [Esplora](https://github.
 ```
 ├── src/                  # React frontend (Vite)
 │   ├── components/       # InstallWizard, SignIn, DKGWizard, VaultPage,
-│   │                     # BtcSend, ProposalReview, FrostSign, Settings,
-│   │                     # AddressBook, UserManager
+│   │                     # BtcSend, SendSession, ProposalReview, FrostSign,
+│   │                     # Settings, AddressBook, UserManager
 │   └── lib/              # FROST ceremony codecs, share files, transaction
 │                         # analysis, relay client, API client, crypto
 ├── backend/              # Node.js/Express backend
