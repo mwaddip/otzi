@@ -19,5 +19,5 @@
     <polygon points="160,155 168,163 160,171 152,163"/>
   </g>
   <!-- "Ötzi" text below logo -->
-  <text x="640" y="530" text-anchor="middle" font-family="'JetBrains Mono', 'Fira Code', 'Consolas', monospace" font-size="36" fill="#F5F7FA" letter-spacing="0.15em">PERMAFROST VAULT</text>
+  <text x="640" y="530" text-anchor="middle" font-family="'JetBrains Mono', 'Fira Code', 'Consolas', monospace" font-size="36" fill="#F5F7FA" letter-spacing="0.15em">THRESHOLD BITCOIN VAULT</text>
 </svg>

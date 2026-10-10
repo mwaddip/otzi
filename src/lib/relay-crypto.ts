@@ -36,7 +36,7 @@ export async function importPublicKey(raw: Uint8Array): Promise<CryptoKey> {
 
 /**
  * Derive an AES-256-GCM key from ECDH shared secret + HKDF.
- * salt = session code (ASCII), info = "permafrost-relay-v1".
+ * salt = session code (ASCII), info = "otzi-relay-v1".
  */
 export async function deriveAESKey(
   myPrivateKey: CryptoKey,
@@ -61,7 +61,7 @@ export async function deriveAESKey(
 
   // Step 3: HKDF → AES-256-GCM key
   const salt = new TextEncoder().encode(sessionCode);
-  const info = new TextEncoder().encode('permafrost-relay-v1');
+  const info = new TextEncoder().encode('otzi-relay-v1');
 
   return crypto.subtle.deriveKey(
     { name: 'HKDF', hash: 'SHA-256', salt, info },
@@ -98,7 +98,7 @@ export async function decrypt(key: CryptoKey, data: Uint8Array): Promise<Uint8Ar
   return new Uint8Array(plaintext);
 }
 
-/** Compute session fingerprint: first 8 hex chars of SHA-256(sorted pubkeys). */
+/** Session fingerprint: first 96 bits of SHA-256(pubkeys in party order), as xxxx-xxxx-xxxx-xxxx-xxxx-xxxx. */
 export async function sessionFingerprint(pubkeys: Map<number, Uint8Array>): Promise<string> {
   const sorted = [...pubkeys.entries()]
     .sort(([a], [b]) => a - b)
@@ -112,10 +112,11 @@ export async function sessionFingerprint(pubkeys: Map<number, Uint8Array>): Prom
     offset += pk.length;
   }
   const hash = await crypto.subtle.digest('SHA-256', buf(concat));
-  return Array.from(new Uint8Array(hash))
-    .slice(0, 4)
+  const hex = Array.from(new Uint8Array(hash))
+    .slice(0, 12)
     .map(b => b.toString(16).padStart(2, '0'))
     .join('');
+  return hex.match(/.{4}/g)!.join('-');
 }
 
 // -- Helpers for base64 encoding used in wire protocol --

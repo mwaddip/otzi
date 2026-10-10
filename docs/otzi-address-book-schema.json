@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mwaddip/otzi/docs/otzi-address-book-schema.json",
+  "title": "Ötzi address book",
+  "description": "Portable address book for an Ötzi vault. Saved and imported as a .otzi.json file.",
+  "type": "object",
+  "required": ["kind", "version", "network", "entries"],
+  "additionalProperties": false,
+  "properties": {
+    "kind": {
+      "const": "otzi-address-book",
+      "description": "Identifies the file as an Ötzi address book."
+    },
+    "version": {
+      "const": 1,
+      "description": "File format version."
+    },
+    "network": {
+      "enum": ["mainnet", "testnet4", "signet"],
+      "description": "Bitcoin network the addresses belong to. Must match the importing instance."
+    },
+    "entries": {
+      "type": "array",
+      "maxItems": 1000,
+      "description": "Address book entries. Addresses are unique within the file.",
+      "items": {
+        "type": "object",
+        "required": ["label", "address"],
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "Name shown in the send form and on the signing approval screen."
+          },
+          "address": {
+            "type": "string",
+            "description": "Bitcoin address valid for the file's network (P2PKH, P2SH, P2WPKH, P2WSH or P2TR)."
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 256,
+            "description": "Optional free-form note."
+          }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "kind": "otzi-address-book",
+      "version": 1,
+      "network": "mainnet",
+      "entries": [
+        { "label": "Cold storage", "address": "bc1p5d7rjq7g6rdk2yhzks9smlaqtedr4dekq08ge8ztwac72sfr9rusxg3297" },
+        { "label": "Exchange deposit", "address": "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq", "note": "Rotates monthly" }
+      ]
+    }
+  ]
+}

@@ -1,10 +1,9 @@
-import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
-import { ml_dsa44, ml_dsa65, ml_dsa87 } from '@btc-vision/post-quantum/ml-dsa.js';
 import type { ConfigStore } from './config-store.js';
-import type { UserStore } from './users.js';
+import type { UserStore, Role } from './users.js';
 
-// ── Password hashing (for password auth mode) ──
+// ── Password hashing (password mode) ──
 
 const SCRYPT_KEYLEN = 64;
 
@@ -21,20 +20,22 @@ export function verifyPassword(password: string, stored: string): boolean {
   return timingSafeEqual(Buffer.from(hash), Buffer.from(computed));
 }
 
-// ── Token management ──
+// ── Session tokens ──
 
-interface TokenInfo {
+export type TokenRole = Role | 'password-admin';
+
+export interface TokenInfo {
+  role: TokenRole;
+  userId?: string;
   expiresAt: number;
-  role: 'admin' | 'user' | 'password-admin'; // password-admin = legacy password mode
-  address?: string; // wallet address (only for wallet mode)
 }
 
 const tokens = new Map<string, TokenInfo>();
 const TOKEN_EXPIRY = 6 * 60 * 60 * 1000; // 6 hours
 
-export function createToken(role: TokenInfo['role'], address?: string): string {
+export function createToken(role: TokenRole, userId?: string): string {
   const token = randomBytes(32).toString('hex');
-  tokens.set(token, { expiresAt: Date.now() + TOKEN_EXPIRY, role, address });
+  tokens.set(token, { role, userId, expiresAt: Date.now() + TOKEN_EXPIRY });
   return token;
 }
 
@@ -48,87 +49,68 @@ export function getTokenInfo(token: string): TokenInfo | null {
   return info;
 }
 
-// ── Challenge management ──
-
-interface Challenge {
-  value: string;
-  expiresAt: number;
+export function revokeAllTokens(): void {
+  tokens.clear();
 }
 
-const challenges = new Map<string, Challenge>();
-const CHALLENGE_EXPIRY = 60_000; // 60 seconds
-
-export function createChallenge(): string {
-  const value = randomBytes(32).toString('hex');
-  challenges.set(value, { value, expiresAt: Date.now() + CHALLENGE_EXPIRY });
-  return value;
-}
-
-export function consumeChallenge(value: string): boolean {
-  const c = challenges.get(value);
-  if (!c) return false;
-  challenges.delete(value); // one-use
-  return Date.now() <= c.expiresAt;
-}
-
-// ── ML-DSA verification ──
-// CRITICAL: this uses mldsaPubKey (1312/1952/2592 bytes), NOT p2tr/tweakedPubKey
-
-interface MLDSALevel {
-  sigSize: number;
-  verify: (sig: Uint8Array, msg: Uint8Array, publicKey: Uint8Array) => boolean;
-  name: string;
-}
-
-const MLDSA_LEVELS: ReadonlyMap<number, MLDSALevel> = new Map([
-  [1312, { sigSize: 2420, verify: (s, m, p) => ml_dsa44.verify(s, m, p), name: 'ML-DSA-44' }],
-  [1952, { sigSize: 3309, verify: (s, m, p) => ml_dsa65.verify(s, m, p), name: 'ML-DSA-65' }],
-  [2592, { sigSize: 4627, verify: (s, m, p) => ml_dsa87.verify(s, m, p), name: 'ML-DSA-87' }],
-]);
-
-export function verifyMLDSA(
-  signature: Uint8Array,
-  mldsaPubKey: Uint8Array,
-  challenge: string,
-): { valid: boolean; walletAddress?: string; error?: string } {
-  const level = MLDSA_LEVELS.get(mldsaPubKey.length);
-  if (!level) return { valid: false, error: `unrecognized ML-DSA public key size: ${mldsaPubKey.length}` };
-  if (signature.length !== level.sigSize) {
-    return { valid: false, error: `signature size ${signature.length} doesn't match ${level.name} (expected ${level.sigSize})` };
-  }
-
-  // Reconstruct double-hash per OPWallet convention:
-  // signedData = SHA256(hex(SHA256("Otzi auth {challenge}")))
-  const message = `Otzi auth ${challenge}`;
-  const messageHash = createHash('sha256').update(message).digest();
-  const walletInput = messageHash.toString('hex');
-  const signedHash = createHash('sha256').update(walletInput).digest();
-
-  let isValid: boolean;
-  try {
-    isValid = level.verify(
-      new Uint8Array(signature),
-      new Uint8Array(signedHash),
-      new Uint8Array(mldsaPubKey),
-    );
-  } catch (err) {
-    return { valid: false, error: `${level.name} verify error: ${err instanceof Error ? err.message : String(err)}` };
-  }
-
-  if (!isValid) return { valid: false, error: 'signature verification failed' };
-
-  // Wallet address = 0x + hex(SHA256(mldsaPubKey)) — NOT tweakedPubKey
-  const walletAddress = '0x' + createHash('sha256').update(mldsaPubKey).digest('hex');
-  return { valid: true, walletAddress };
-}
-
-// ── Role-aware middleware ──
-
-function extractToken(req: Request): string | null {
+export function extractToken(req: Request): string | null {
   const auth = req.headers.authorization;
   if (!auth?.startsWith('Bearer ')) return null;
   return auth.slice(7);
 }
+
+export function requestTokenInfo(req: Request): TokenInfo | null {
+  const token = extractToken(req);
+  return token ? getTokenInfo(token) : null;
+}
+
+/**
+ * The request's session with its current role. User tokens take their role
+ * from the user store, so removals and role changes apply immediately.
+ */
+export function requestSession(req: Request, userStore: UserStore): TokenInfo | null {
+  const info = requestTokenInfo(req);
+  if (!info?.userId) return info;
+  const user = userStore.getUser(info.userId);
+  return user ? { ...info, role: user.role } : null;
+}
+
+// ── One-use challenges ──
+
+export type ChallengeKind = 'bitcoin' | 'passkey-register' | 'passkey-login';
+
+interface Challenge {
+  kind: ChallengeKind;
+  message?: string;   // bitcoin: the exact text to be signed
+  rpId?: string;      // passkey: RP ID the options were issued for
+  expiresAt: number;
+}
+
+const challenges = new Map<string, Challenge>();
+const CHALLENGE_EXPIRY = 5 * 60 * 1000;
+
+export function storeChallenge(value: string, challenge: Omit<Challenge, 'expiresAt'>): void {
+  challenges.set(value, { ...challenge, expiresAt: Date.now() + CHALLENGE_EXPIRY });
+}
+
+/** Remove and return a challenge of the given kind, or null if unknown/expired/wrong kind. */
+export function consumeChallenge(value: string, kind: ChallengeKind): Challenge | null {
+  const c = challenges.get(value);
+  if (!c) return null;
+  challenges.delete(value);
+  if (c.kind !== kind || Date.now() > c.expiresAt) return null;
+  return c;
+}
+
+/** Issue a Bitcoin sign-in challenge bound to the request host. */
+export function createBitcoinChallenge(host: string): { challenge: string; message: string } {
+  const challenge = randomBytes(32).toString('hex');
+  const message = `Sign in to Otzi\nHost: ${host}\nChallenge: ${challenge}`;
+  storeChallenge(challenge, { kind: 'bitcoin', message });
+  return { challenge, message };
+}
+
+// ── Role-aware middleware ──
 
 export interface AuthMiddleware {
   requireAdmin: RequestHandler;
@@ -137,96 +119,48 @@ export interface AuthMiddleware {
 }
 
 export function createAuthMiddleware(store: ConfigStore, userStore: UserStore): AuthMiddleware {
-  function getAuthMode(): 'password' | 'wallet' {
-    try {
-      return store.get().authMode || 'password';
-    } catch {
-      return 'password';
-    }
-  }
-
-  function isConfigLoaded(): boolean {
-    try { store.get(); return true; } catch { return false; }
-  }
-
-  const requireAdmin: RequestHandler = (req: Request, res: Response, next: NextFunction): void => {
-    if (!isConfigLoaded()) { next(); return; }
-    const mode = getAuthMode();
-
-    if (mode === 'password') {
-      // Legacy: check admin password token, skip if no password set
-      try {
-        const config = store.get();
-        if (!config.adminPasswordHash) { next(); return; }
-      } catch { next(); return; }
-
-      const token = extractToken(req);
-      if (!token) { res.status(401).json({ error: 'Admin authentication required' }); return; }
-      const info = getTokenInfo(token);
-      if (!info) { res.status(401).json({ error: 'Invalid or expired token' }); return; }
-      if (info.role !== 'password-admin') { res.status(403).json({ error: 'Admin role required' }); return; }
+  function guard(check: (info: TokenInfo | null) => string | null): RequestHandler {
+    return (req: Request, res: Response, next: NextFunction): void => {
+      if (!store.isLoaded()) {
+        res.status(503).json({ error: 'Instance not ready' });
+        return;
+      }
+      // An unknown or expired token, or one of a removed user, counts as no token
+      const info = requestSession(req, userStore);
+      const error = check(info);
+      if (error) {
+        res.status(info ? 403 : 401).json({ error });
+        return;
+      }
       next();
-      return;
-    }
+    };
+  }
 
-    // Wallet mode
-    const token = extractToken(req);
-    if (!token) { res.status(401).json({ error: 'Authentication required' }); return; }
-    const info = getTokenInfo(token);
-    if (!info) { res.status(401).json({ error: 'Invalid or expired token' }); return; }
-    if (info.role !== 'admin') { res.status(403).json({ error: 'Admin role required' }); return; }
-    next();
-  };
+  const isPasswordMode = () => store.get().authMode === 'password';
 
-  const requireUser: RequestHandler = (req: Request, res: Response, next: NextFunction): void => {
-    if (!isConfigLoaded()) { next(); return; }
-    const mode = getAuthMode();
+  const requireAdmin = guard(info => {
+    if (isPasswordMode()) return info?.role === 'password-admin' ? null : 'Admin authentication required';
+    return info?.role === 'admin' ? null : 'Admin role required';
+  });
 
-    if (mode === 'password') {
-      requireAdmin(req, res, next);
-      return;
-    }
+  const requireUser = guard(info => {
+    if (isPasswordMode()) return info?.role === 'password-admin' ? null : 'Admin authentication required';
+    return info?.role === 'admin' || info?.role === 'user' ? null : 'Sign-in required';
+  });
 
-    // Wallet mode: admin or user
-    const token = extractToken(req);
-    if (!token) { res.status(401).json({ error: 'Authentication required' }); return; }
-    const info = getTokenInfo(token);
-    if (!info) { res.status(401).json({ error: 'Invalid or expired token' }); return; }
-    if (info.role !== 'admin' && info.role !== 'user') {
-      res.status(403).json({ error: 'User or admin role required' });
-      return;
-    }
-    next();
-  };
-
-  const requireRead: RequestHandler = (req: Request, res: Response, next: NextFunction): void => {
-    if (!isConfigLoaded()) { next(); return; }
-    const mode = getAuthMode();
-
-    if (mode === 'password') { next(); return; }
-
-    // Wallet mode: check everybodyCanRead setting
-    if (userStore.getEverybodyCanRead()) { next(); return; }
-
-    // Need at least a valid token (any role)
-    const token = extractToken(req);
-    if (!token) { res.status(401).json({ error: 'Authentication required' }); return; }
-    const info = getTokenInfo(token);
-    if (!info) { res.status(401).json({ error: 'Invalid or expired token' }); return; }
-    next();
-  };
+  const requireRead = guard(info => {
+    if (isPasswordMode()) return null;
+    if (userStore.getEverybodyCanRead()) return null;
+    return info ? null : 'Sign-in required';
+  });
 
   return { requireAdmin, requireUser, requireRead };
 }
 
-// ── Periodic cleanup of expired tokens and challenges ──
+// ── Periodic cleanup ──
 
 setInterval(() => {
   const now = Date.now();
-  for (const [key, info] of tokens) {
-    if (now > info.expiresAt) tokens.delete(key);
-  }
-  for (const [key, c] of challenges) {
-    if (now > c.expiresAt) challenges.delete(key);
-  }
-}, 5 * 60 * 1000); // every 5 minutes
+  for (const [key, info] of tokens) if (now > info.expiresAt) tokens.delete(key);
+  for (const [key, c] of challenges) if (now > c.expiresAt) challenges.delete(key);
+}, 5 * 60 * 1000).unref();

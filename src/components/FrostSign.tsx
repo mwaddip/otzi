@@ -3,361 +3,283 @@ import {
   signRound1,
   signRound2,
   signAggregate,
-  type KeyPackage,
-  type PublicKeyPackage,
+  verifySignature,
   type SigningCommitment,
   type SigningNonces,
   type SignatureShare,
-  type Round1Output,
 } from '@mwaddip/frots';
 import {
   encodeFrostSignR1,
   decodeFrostSignR1,
   encodeFrostSignR2,
   decodeFrostSignR2,
+  ParticipantBinding,
   type SighashInfo,
   type FrostSignatureSet,
 } from '../lib/frost-sign';
+import { decodeEnvelope, getSessionIdPrefix } from '../lib/dkg';
 import { fromHex, toHex } from '../lib/hex';
 import type { RelayClient } from '../lib/relay';
-
-// ── Types ──
+import type { DecryptedShare } from '../lib/share-file';
 
 type FrostPhase = 'round1' | 'round2' | 'complete' | 'failed';
 
 interface FrostSignProps {
+  /** Sighashes this party computed itself from the approved transaction. */
   sighashes: SighashInfo[];
-  frostKeyPackage: KeyPackage;
-  frostPublicKey: string;          // hex, 33-byte SEC1 tweaked aggregate
-  threshold: number;
-  partyId: number;                 // 0-indexed
+  share: DecryptedShare;
+  isLeader: boolean;
+  /** A ready relay client for a session of exactly `share.threshold` participants. */
+  relayClient: RelayClient;
   onSignaturesReady: (sigs: FrostSignatureSet) => void;
   onCancel: () => void;
-  relayClient?: RelayClient | null;
-  relayReady?: boolean;
-  isLeader?: boolean;
 }
 
 const FROST_STATE_PREFIX = 'FROST-STATE:';
 const FROST_COMPLETE_PREFIX = 'FROST-COMPLETE:';
+const LEADER = 0;
 
-// ── Component ──
+const byIdentifier = <T extends { identifier: number }>(a: T, b: T) => a.identifier - b.identifier;
 
-export function FrostSign({
-  sighashes,
-  frostKeyPackage,
-  frostPublicKey,
-  threshold,
-  partyId,
-  onSignaturesReady,
-  onCancel,
-  relayClient,
-  relayReady,
-  isLeader,
-}: FrostSignProps) {
-  void frostPublicKey; // available for future use (cheater detection)
+/**
+ * FROST signing over the relay. Protocol: facts/INTERFACES.md §7.
+ *
+ * Each nonce pair is used for exactly one signRound2 call: round 2 runs once
+ * (guarded synchronously), over a commitment list frozen to the session's T
+ * participants, and the nonces are wiped right after.
+ */
+export function FrostSign({ sighashes, share, isLeader, relayClient, onSignaturesReady, onCancel }: FrostSignProps) {
+  const { keyPackage, publicKeyPackage, threshold, partyId } = share;
+  const N = sighashes.length;
+  const me = relayClient.partyId;
 
   const [phase, setPhase] = useState<FrostPhase>('round1');
   const [error, setError] = useState('');
-
-  // Per-sighash state
-  const noncesRef = useRef<SigningNonces[]>([]);
-  const myCommitmentsRef = useRef<SigningCommitment[]>([]);
-
-  // Collected from peers: partyId → array of N commitments (one per sighash)
-  const collectedR1Ref = useRef<Map<number, SigningCommitment[]>>(new Map());
   const [r1Count, setR1Count] = useState(0);
-
-  // Collected partial sigs: partyId → array of N SignatureShares
-  const collectedR2Ref = useRef<Map<number, SignatureShare[]>>(new Map());
   const [r2Count, setR2Count] = useState(0);
 
-  // My round 2 partial sigs (for re-broadcasting)
+  const noncesRef = useRef<SigningNonces[]>([]);
+  const myCommitmentsRef = useRef<SigningCommitment[]>([]);
   const mySharesRef = useRef<SignatureShare[]>([]);
-
-  // State sync
+  // Keyed by relay sender
+  const collectedR1Ref = useRef<Map<number, SigningCommitment[]>>(new Map());
+  const collectedR2Ref = useRef<Map<number, SignatureShare[]>>(new Map());
+  const frozenRef = useRef<{ senders: Set<number>; commitments: SigningCommitment[][] } | null>(null);
+  const round2StartedRef = useRef(false);
+  const aggregatedRef = useRef(false);
+  const failedRef = useRef(false);
   const blobsSentRef = useRef<Set<number>>(new Set());
-  const peerStatesRef = useRef<Map<number, { round: number }>>(new Map());
-  const initRef = useRef(false);
+  const bindingRef = useRef(new ParticipantBinding(p => publicKeyPackage.verifyingShares.has(BigInt(p + 1))));
+  const phaseRef = useRef<FrostPhase>('round1');
+  phaseRef.current = phase;
 
-  // Session ID for blob envelope (use first sighash as session context)
-  const sessionIdRef = useRef<Uint8Array>(
-    sighashes.length > 0 ? fromHex(sighashes[0]!.hash) : new Uint8Array(32),
-  );
+  // Envelope session id: the first sighash, identical for every signer of this transaction
+  const sessionIdRef = useRef<Uint8Array>(fromHex(sighashes[0]!.hash));
+  const sidPrefix = getSessionIdPrefix(sessionIdRef.current);
 
-  const N = sighashes.length;
+  const fail = useCallback((msg: string) => {
+    failedRef.current = true;
+    noncesRef.current = [];
+    setError(msg);
+    setPhase('failed');
+  }, []);
 
-  // ── Round 1: generate nonces + commitments ──
+  // ── Round 1: nonces + commitments for every sighash ──
   const doRound1 = useCallback(() => {
+    bindingRef.current.bind(me, partyId);
     const rng = { fillBytes(dest: Uint8Array) { crypto.getRandomValues(dest); } };
     const nonces: SigningNonces[] = [];
     const commitments: SigningCommitment[] = [];
-
     for (let i = 0; i < N; i++) {
-      const out: Round1Output = signRound1(frostKeyPackage, rng);
+      const out = signRound1(keyPackage, rng);
       nonces.push(out.nonces);
       commitments.push(out.commitments);
     }
-
     noncesRef.current = nonces;
     myCommitmentsRef.current = commitments;
+    collectedR1Ref.current.set(me, commitments);
+    setR1Count(collectedR1Ref.current.size);
+    void relayClient.broadcast(new TextEncoder().encode(encodeFrostSignR1(partyId, commitments, sessionIdRef.current)));
+    blobsSentRef.current.add(1);
+  }, [N, keyPackage, partyId, me, relayClient]);
 
-    // Add own commitments to collected
-    collectedR1Ref.current.set(partyId, commitments);
-    setR1Count(1);
-
-    // Broadcast
-    if (relayClient) {
-      const blob = encodeFrostSignR1(partyId, commitments, sessionIdRef.current);
-      void relayClient.broadcast(new TextEncoder().encode(blob));
-      blobsSentRef.current.add(1);
-    }
-  }, [N, frostKeyPackage, partyId, relayClient]);
-
-  // ── Round 2: compute partial sigs ──
+  // ── Round 2: exactly once, over the T commitment sets collected so far ──
   const doRound2 = useCallback(() => {
+    if (round2StartedRef.current || failedRef.current) return;
+    if (collectedR1Ref.current.size !== threshold || !collectedR1Ref.current.has(me)) return;
+    round2StartedRef.current = true;
+
+    const senders = new Set(collectedR1Ref.current.keys());
+    const sets = [...collectedR1Ref.current.values()];
+    const commitments = sighashes.map((_, i) => sets.map(c => c[i]!).sort(byIdentifier));
+    frozenRef.current = { senders, commitments };
+
+    const nonces = noncesRef.current;
+    noncesRef.current = []; // single use, whatever happens next
     try {
-      const shares: SignatureShare[] = [];
-
-      for (let i = 0; i < N; i++) {
-        const sighashBytes = fromHex(sighashes[i]!.hash);
-        const tweaked = sighashes[i]!.type === 'key-path';
-
-        // Gather all commitments for this sighash index
-        const allCommitments: SigningCommitment[] = [];
-        for (const [, peerCommitments] of collectedR1Ref.current) {
-          allCommitments.push(peerCommitments[i]!);
-        }
-
-        const share = signRound2(
-          frostKeyPackage,
-          noncesRef.current[i]!,
-          sighashBytes,
-          allCommitments,
-          { tweaked },
-        );
-        shares.push(share);
-      }
-
+      const shares = sighashes.map((s, i) => signRound2(keyPackage, nonces[i]!, fromHex(s.hash), commitments[i]!, { tweaked: true }));
       mySharesRef.current = shares;
-
-      // Add own shares to collected
-      collectedR2Ref.current.set(partyId, shares);
-      setR2Count(1);
+      collectedR2Ref.current.set(me, shares);
+      setR2Count(collectedR2Ref.current.size);
       setPhase('round2');
-
-      // Broadcast
-      if (relayClient) {
-        const blob = encodeFrostSignR2(partyId, shares, sessionIdRef.current);
-        void relayClient.broadcast(new TextEncoder().encode(blob));
-        blobsSentRef.current.add(2);
-      }
+      void relayClient.broadcast(new TextEncoder().encode(encodeFrostSignR2(partyId, shares, sessionIdRef.current)));
+      blobsSentRef.current.add(2);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Round 2 failed');
-      setPhase('failed');
+      fail(e instanceof Error ? e.message : 'Round 2 failed');
     }
-  }, [N, sighashes, frostKeyPackage, partyId, relayClient]);
+  }, [sighashes, keyPackage, partyId, me, threshold, relayClient, fail]);
 
-  // ── Aggregate (leader only) ──
+  // ── Aggregate (leader) ──
   const doAggregate = useCallback(() => {
+    const frozen = frozenRef.current;
+    if (aggregatedRef.current || failedRef.current || !frozen) return;
+    const r2 = collectedR2Ref.current;
+    if (r2.size !== frozen.senders.size || [...r2.keys()].some(s => !frozen.senders.has(s))) return;
+    aggregatedRef.current = true;
     try {
-      // Build minimal PublicKeyPackage
-      const pubKeyPkg: PublicKeyPackage = {
-        verifyingKey: frostKeyPackage.verifyingKey,
-        untweakedVerifyingKey: frostKeyPackage.untweakedVerifyingKey,
-        verifyingShares: new Map(),
-        untweakedVerifyingShares: new Map(),
-        minSigners: threshold,
-      };
-
-      const signatures: Array<{ index: number; signature: string }> = [];
-
-      for (let i = 0; i < N; i++) {
-        const sighashBytes = fromHex(sighashes[i]!.hash);
-        const tweaked = sighashes[i]!.type === 'key-path';
-
-        // Gather all commitments for this sighash
-        const allCommitments: SigningCommitment[] = [];
-        for (const [, peerCommitments] of collectedR1Ref.current) {
-          allCommitments.push(peerCommitments[i]!);
-        }
-
-        // Gather all partial sigs for this sighash
-        const allShares: SignatureShare[] = [];
-        for (const [, peerShares] of collectedR2Ref.current) {
-          allShares.push(peerShares[i]!);
-        }
-
-        const sig = signAggregate(allShares, sighashBytes, allCommitments, pubKeyPkg, { tweaked });
-        signatures.push({
-          index: sighashes[i]!.index,
-          signature: toHex(sig),
-        });
-      }
-
-      const result: FrostSignatureSet = { signatures };
+      const sets = [...r2.values()];
+      const signatures = sighashes.map((s, i) => {
+        const shares = sets.map(x => x[i]!).sort(byIdentifier);
+        const sig = signAggregate(shares, fromHex(s.hash), frozen.commitments[i]!, publicKeyPackage, { tweaked: true });
+        return { index: s.index, signature: toHex(sig) };
+      });
       setPhase('complete');
-
-      // Broadcast completion to joiners
-      if (relayClient) {
-        void relayClient.broadcast(
-          new TextEncoder().encode(FROST_COMPLETE_PREFIX + JSON.stringify(result.signatures)),
-        );
-      }
-
-      onSignaturesReady(result);
+      void relayClient.broadcast(new TextEncoder().encode(FROST_COMPLETE_PREFIX + JSON.stringify(signatures)));
+      onSignaturesReady({ signatures });
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Aggregation failed');
-      setPhase('failed');
+      fail(e instanceof Error ? e.message : 'Aggregation failed');
     }
-  }, [N, sighashes, frostKeyPackage, threshold, relayClient, onSignaturesReady]);
+  }, [sighashes, publicKeyPackage, relayClient, onSignaturesReady, fail]);
 
-  // ── Auto-init round 1 ──
+  // ── Joiner: accept the leader's signatures only if they verify under the vault key ──
+  const acceptLeaderSignatures = useCallback((sigs: Array<{ index: number; signature: string }>) => {
+    if (!Array.isArray(sigs) || sigs.length !== N) { fail('Leader sent the wrong number of signatures'); return; }
+    for (const s of sighashes) {
+      const sig = sigs.find(x => x.index === s.index);
+      if (!sig || !/^[0-9a-f]{128}$/i.test(sig.signature)
+        || !verifySignature(fromHex(sig.signature), fromHex(s.hash), publicKeyPackage.verifyingKey)) {
+        fail(`Leader's signature for input ${s.index} does not verify`);
+        return;
+      }
+    }
+    setPhase('complete');
+    onSignaturesReady({ signatures: sigs });
+  }, [N, sighashes, publicKeyPackage, onSignaturesReady, fail]);
+
+  // Start round 1 once
+  const initRef = useRef(false);
   useEffect(() => {
-    if (initRef.current || !relayReady || N === 0) return;
+    if (initRef.current || N === 0) return;
     initRef.current = true;
     doRound1();
-  }, [relayReady, N, doRound1]);
+  }, [N, doRound1]);
 
-  // ── State sync: broadcast FROST-STATE periodically ──
+  // ── State sync ──
   const broadcastState = useCallback(() => {
-    if (!relayClient) return;
-    const roundNum = phase === 'round1' ? 1 : phase === 'round2' ? 2 : phase === 'complete' ? 3 : 0;
-    if (roundNum === 0) return;
+    const round = phase === 'round1' ? 1 : phase === 'round2' ? 2 : phase === 'complete' ? 3 : 0;
+    if (round === 0) return;
     const sent = [...blobsSentRef.current].join(',');
-    void relayClient.broadcast(
-      new TextEncoder().encode(`${FROST_STATE_PREFIX}${partyId}:${roundNum}:${sent}`),
-    );
+    void relayClient.broadcast(new TextEncoder().encode(`${FROST_STATE_PREFIX}${partyId}:${round}:${sent}`));
   }, [relayClient, phase, partyId]);
 
   useEffect(() => { broadcastState(); }, [broadcastState, r1Count, r2Count]);
 
   useEffect(() => {
-    if (!relayClient) return;
     const iv = setInterval(broadcastState, 500);
     return () => clearInterval(iv);
-  }, [relayClient, broadcastState]);
+  }, [broadcastState]);
 
-  // ── Leader: auto-advance when all blobs collected ──
-  const advancingRef = useRef(false);
+  // ── Leader drives rounds ──
   useEffect(() => {
-    if (!isLeader || !relayClient || advancingRef.current) return;
+    if (!isLeader) return;
+    if (phase === 'round1' && r1Count >= threshold) doRound2();
+    else if (phase === 'round2' && r2Count >= threshold) doAggregate();
+  }, [isLeader, phase, r1Count, r2Count, threshold, doRound2, doAggregate]);
 
-    if (phase === 'round1' && r1Count >= threshold) {
-      advancingRef.current = true;
-      doRound2();
-      advancingRef.current = false;
-    } else if (phase === 'round2' && r2Count >= threshold) {
-      advancingRef.current = true;
-      doAggregate();
-      advancingRef.current = false;
-    }
-  }, [isLeader, relayClient, phase, r1Count, r2Count, threshold, doRound2, doAggregate]);
-
-  // ── Relay: handle incoming messages ──
+  // ── Incoming relay messages ──
   useEffect(() => {
-    if (!relayClient) return;
-    const handler = (_from: number, payload: Uint8Array) => {
+    const handler = (from: number, payload: Uint8Array) => {
+      if (failedRef.current) return;
       const text = new TextDecoder().decode(payload);
 
-      // FROST-COMPLETE from leader
       if (text.startsWith(FROST_COMPLETE_PREFIX)) {
+        if (isLeader || from !== LEADER || phaseRef.current === 'complete') return;
         try {
-          const sigs = JSON.parse(text.slice(FROST_COMPLETE_PREFIX.length)) as Array<{ index: number; signature: string }>;
-          setPhase('complete');
-          onSignaturesReady({ signatures: sigs });
-        } catch { /* ignore parse errors */ }
-        return;
-      }
-
-      // FROST-STATE from peer
-      const stateMatch = text.match(/^FROST-STATE:(\d+):(\d+):([\d,]*)$/);
-      if (stateMatch) {
-        const pid = parseInt(stateMatch[1]!, 10);
-        const peerRound = parseInt(stateMatch[2]!, 10);
-        peerStatesRef.current.set(pid, { round: peerRound });
-
-        // Re-send blobs peer might need
-        if (peerRound === 1 && blobsSentRef.current.has(1) && myCommitmentsRef.current.length > 0) {
-          const blob = encodeFrostSignR1(partyId, myCommitmentsRef.current, sessionIdRef.current);
-          void relayClient.broadcast(new TextEncoder().encode(blob));
-        }
-        if (peerRound === 2 && blobsSentRef.current.has(2) && mySharesRef.current.length > 0) {
-          const blob = encodeFrostSignR2(partyId, mySharesRef.current, sessionIdRef.current);
-          void relayClient.broadcast(new TextEncoder().encode(blob));
-        }
-
-        // Joiner: follow leader
-        if (!isLeader) {
-          const myRound = phase === 'round1' ? 1 : phase === 'round2' ? 2 : 3;
-          if (peerRound > myRound && myRound === 1 && collectedR1Ref.current.size >= threshold) {
-            doRound2();
-          }
+          acceptLeaderSignatures(JSON.parse(text.slice(FROST_COMPLETE_PREFIX.length)));
+        } catch {
+          fail('Leader sent malformed signatures');
         }
         return;
       }
 
-      // frost-sign-r1 blob
+      const state = text.match(/^FROST-STATE:(\d+):(\d+):([\d,]*)$/);
+      if (state) {
+        const peerRound = parseInt(state[2]!, 10);
+        // Re-send our blob for the round the peer is in
+        if (peerRound === 1 && blobsSentRef.current.has(1)) {
+          void relayClient.broadcast(new TextEncoder().encode(encodeFrostSignR1(partyId, myCommitmentsRef.current, sessionIdRef.current)));
+        }
+        if (peerRound === 2 && blobsSentRef.current.has(2)) {
+          void relayClient.broadcast(new TextEncoder().encode(encodeFrostSignR2(partyId, mySharesRef.current, sessionIdRef.current)));
+        }
+        // Joiner follows the leader into round 2
+        if (!isLeader && from === LEADER && peerRound >= 2) doRound2();
+        return;
+      }
+
+      const env = decodeEnvelope(text);
+      if (!env || env.sid !== sidPrefix || from === me) return;
+
       const r1 = decodeFrostSignR1(text);
-      if (r1 && r1.partyId !== partyId) {
-        collectedR1Ref.current.set(r1.partyId, r1.commitments);
-        setR1Count(collectedR1Ref.current.size);
-        return;
-      }
+      const r2 = r1 ? null : decodeFrostSignR2(text);
+      const claimed = r1?.partyId ?? r2?.partyId;
+      if (claimed === undefined) return;
 
-      // frost-sign-r2 blob
-      const r2 = decodeFrostSignR2(text);
-      if (r2 && r2.partyId !== partyId) {
-        collectedR2Ref.current.set(r2.partyId, r2.shares);
+      const bound = bindingRef.current.bind(from, claimed);
+      if (bound === 'conflict') { fail(`Two session participants claim party ${claimed + 1}; aborting`); return; }
+      if (bound === 'invalid') return;
+
+      const id = claimed + 1;
+      if (r1 && r1.commitments.length === N && r1.commitments.every(c => c.identifier === id) && !collectedR1Ref.current.has(from)) {
+        if (round2StartedRef.current) return; // the commitment list is frozen
+        collectedR1Ref.current.set(from, r1.commitments);
+        setR1Count(collectedR1Ref.current.size);
+      } else if (r2 && r2.shares.length === N && r2.shares.every(x => x.identifier === id) && !collectedR2Ref.current.has(from)) {
+        collectedR2Ref.current.set(from, r2.shares);
         setR2Count(collectedR2Ref.current.size);
-        return;
       }
     };
 
     relayClient.on('message', handler);
     return () => { relayClient.off('message', handler); };
-  }, [relayClient, partyId, phase, isLeader, threshold, doRound2, onSignaturesReady]);
+  }, [relayClient, partyId, me, isLeader, N, sidPrefix, doRound2, acceptLeaderSignatures, fail]);
 
-  // ── Render ──
   return (
-    <div className="threshold-sign">
-      <div className="threshold-section-title">FROST BTC Signing</div>
-
+    <div className="card">
+      <h2>Signing</h2>
       {phase === 'round1' && (
-        <div className="threshold-blob-exchange">
-          <div className="threshold-section-title">Round 1 — Commitments</div>
-          <div className="threshold-hint" style={{ textAlign: 'center', padding: '8px 0' }}>
-            {r1Count}/{threshold} commitments received
-            {r1Count < threshold ? ' — waiting for peers...' : ' — advancing...'}
-          </div>
+        <div className="threshold-hint" style={{ textAlign: 'center', padding: '8px 0' }}>
+          <div className="spinner" style={{ margin: '0 auto 8px' }} />
+          Round 1 — commitments {r1Count}/{threshold}
+          {r1Count < threshold ? ' · waiting for co-signers to approve' : ''}
         </div>
       )}
-
       {phase === 'round2' && (
-        <div className="threshold-blob-exchange">
-          <div className="threshold-section-title">Round 2 — Partial Signatures</div>
-          <div className="threshold-hint" style={{ textAlign: 'center', padding: '8px 0' }}>
-            {r2Count}/{threshold} partial signatures received
-            {r2Count < threshold ? ' — waiting for peers...' : ' — aggregating...'}
-          </div>
+        <div className="threshold-hint" style={{ textAlign: 'center', padding: '8px 0' }}>
+          <div className="spinner" style={{ margin: '0 auto 8px' }} />
+          Round 2 — signature shares {r2Count}/{threshold}
         </div>
       )}
-
       {phase === 'complete' && (
-        <div className="threshold-complete">
-          <div className="step-status confirmed">
-            FROST BTC signatures ready ({N} input{N !== 1 ? 's' : ''} signed)
-          </div>
+        <div className="success-box">
+          Signed {N} input{N !== 1 ? 's' : ''}.
         </div>
       )}
-
       {phase === 'failed' && (
-        <div className="threshold-complete">
-          <div className="step-status error">{error || 'FROST signing failed'}</div>
-          <button className="step-execute-btn" onClick={onCancel} style={{ marginTop: 12 }}>
-            Cancel
-          </button>
-        </div>
+        <>
+          <div className="warning">{error || 'Signing failed'}</div>
+          <button className="btn btn-secondary btn-full" onClick={onCancel}>Close session</button>
+        </>
       )}
     </div>
   );

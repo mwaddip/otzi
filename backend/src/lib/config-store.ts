@@ -1,14 +1,15 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { encryptConfig, decryptConfig } from './encryption.js';
-import { type VaultConfig, type StorageMode, type NetworkName, defaultConfig } from './types.js';
+import { type VaultConfig, type StorageMode, type NetworkName, type AuthMode, defaultConfig } from './types.js';
 
 const DATA_DIR = process.env.DATA_DIR || '/data';
 const CONFIG_PATH = `${DATA_DIR}/config.json`;
 
 export class ConfigStore {
   private config: VaultConfig | null = null;
-  private storageMode: StorageMode | null = null;
+  /** Storage password for encrypted-persistent mode, held while the config is loaded. */
+  private password: string | null = null;
 
   /** Check if an instance has been initialized */
   isInitialized(): boolean {
@@ -16,19 +17,25 @@ export class ConfigStore {
     return existsSync(CONFIG_PATH);
   }
 
-  /** Initialize a new instance. Called once from the install wizard. */
-  init(network: NetworkName, storageMode: StorageMode, password?: string): void {
-    if (this.isInitialized()) throw new Error('Already initialized');
-    this.config = defaultConfig(network, storageMode);
-    this.storageMode = storageMode;
+  isLoaded(): boolean {
+    return this.config !== null;
+  }
 
-    // Check for hosting seed file (written by install.sh --domain)
+  /** Initialize a new instance. Called once from the install wizard. */
+  init(network: NetworkName, storageMode: StorageMode, authMode: AuthMode, password?: string): void {
+    if (this.isInitialized()) throw new Error('Already initialized');
+    if (storageMode === 'encrypted-persistent' && !password) {
+      throw new Error('Password required for encrypted-persistent mode');
+    }
+    const config = defaultConfig(network, storageMode, authMode);
+
+    // Hosting seed file (written by install.sh --domain)
     const seedPath = `${DATA_DIR}/hosting-seed.json`;
     if (existsSync(seedPath)) {
       try {
         const seed = JSON.parse(readFileSync(seedPath, 'utf8'));
         if (seed.domain) {
-          this.config.hosting = {
+          config.hosting = {
             domain: seed.domain,
             port: seed.port || undefined,
             path: seed.path || undefined,
@@ -39,7 +46,9 @@ export class ConfigStore {
       } catch { /* ignore bad seed */ }
     }
 
-    this.persist(password);
+    this.config = config;
+    this.password = password ?? null;
+    this.persist();
   }
 
   /** Load config from disk. For encrypted-persistent, requires password. */
@@ -49,19 +58,17 @@ export class ConfigStore {
 
     const raw = readFileSync(CONFIG_PATH, 'utf8');
 
-    // Try parsing as plaintext JSON first
+    // Plaintext JSON first
     try {
       this.config = JSON.parse(raw) as VaultConfig;
-      this.storageMode = this.config.storageMode;
       return this.config;
     } catch {
       // Not JSON — must be encrypted
     }
 
     if (!password) throw new Error('Password required to unlock');
-    const decrypted = decryptConfig(raw, password);
-    this.config = JSON.parse(decrypted) as VaultConfig;
-    this.storageMode = this.config.storageMode;
+    this.config = JSON.parse(decryptConfig(raw, password)) as VaultConfig;
+    this.password = password;
     return this.config;
   }
 
@@ -72,46 +79,44 @@ export class ConfigStore {
   }
 
   /** Update config fields and persist. */
-  update(patch: Partial<VaultConfig>, password?: string): VaultConfig {
+  update(patch: Partial<VaultConfig>): VaultConfig {
     if (!this.config) throw new Error('Config not loaded');
     this.config = { ...this.config, ...patch };
-    if (this.storageMode !== 'encrypted-portable') {
-      this.persist(password);
-    }
+    this.persist();
     return this.config;
   }
 
-  /** Import a portable config (decrypted by frontend, sent as JSON). */
-  importPortable(config: VaultConfig): void {
+  /** Replace the whole config (restore). */
+  replace(config: VaultConfig, password?: string): void {
+    if (config.storageMode === 'encrypted-persistent' && !password) {
+      throw new Error('Password required for encrypted-persistent mode');
+    }
     this.config = config;
-    this.storageMode = 'encrypted-portable';
-    // Do NOT persist to disk — portable mode is memory-only
-  }
-
-  /** Export current config as JSON string (frontend will encrypt). */
-  exportConfig(): string {
-    if (!this.config) throw new Error('Config not loaded');
-    return JSON.stringify(this.config);
+    this.password = password ?? null;
+    // A portable config must not leave an older on-disk config behind
+    if (config.storageMode === 'encrypted-portable' && existsSync(CONFIG_PATH)) unlinkSync(CONFIG_PATH);
+    this.persist();
   }
 
   /** Wipe all data. */
   reset(): void {
     this.config = null;
-    this.storageMode = null;
+    this.password = null;
     if (existsSync(CONFIG_PATH)) unlinkSync(CONFIG_PATH);
   }
 
-  private persist(password?: string): void {
+  private persist(): void {
     if (!this.config) return;
+    const mode = this.config.storageMode;
+    if (mode === 'encrypted-portable') return; // memory only
+
     mkdirSync(dirname(CONFIG_PATH), { recursive: true });
     const json = JSON.stringify(this.config, null, 2);
-
-    if (this.config.storageMode === 'encrypted-persistent') {
-      if (!password) throw new Error('Password required for encrypted-persistent mode');
-      writeFileSync(CONFIG_PATH, encryptConfig(json, password));
-    } else if (this.config.storageMode === 'persistent') {
+    if (mode === 'encrypted-persistent') {
+      if (!this.password) throw new Error('Password required for encrypted-persistent mode');
+      writeFileSync(CONFIG_PATH, encryptConfig(json, this.password));
+    } else {
       writeFileSync(CONFIG_PATH, json);
     }
-    // encrypted-portable: never write to disk
   }
 }

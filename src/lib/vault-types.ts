@@ -1,36 +1,28 @@
-/** Shared types used by both the API client and frontend components. */
+/** Shared types used by the API client and frontend components. */
 
 export type StorageMode = 'persistent' | 'encrypted-persistent' | 'encrypted-portable';
-export type NetworkName = 'testnet' | 'mainnet';
+export type NetworkName = 'mainnet' | 'testnet4' | 'signet';
+export type AuthMode = 'password' | 'accounts';
 
-export interface SetupState {
-  wizardComplete: boolean;
-  dkgComplete: boolean;
+export const NETWORK_LABELS: Record<NetworkName, string> = {
+  mainnet: 'Mainnet',
+  testnet4: 'Testnet4',
+  signet: 'Signet',
+};
+
+/** FROST PublicKeyPackage, hex-encoded. Share map keys are FROST identifiers ("1".."N"). */
+export interface VaultKey {
+  minSigners: number;
+  verifyingKey: string;
+  untweakedVerifyingKey: string;
+  verifyingShares: Record<string, string>;
+  untweakedVerifyingShares: Record<string, string>;
 }
 
-export interface WalletPublic {
-  p2tr: string;
-  tweakedPubKey: string;
-  publicKey: string;
-  // Note: mnemonic is NEVER sent to frontend
-}
-
-export interface PermafrostConfig {
-  threshold: number;
-  parties: number;
-  level: number;
-  combinedPubKey: string;
-  shareData: string;
-  frostAggregateKey?: string;
-  frostUntweakedAggregateKey?: string;
-  frostP2tr?: string;
-}
-
-export interface ContractConfig {
-  name: string;
+export interface AddressBookEntry {
+  label: string;
   address: string;
-  abi: unknown[];
-  methods: string[];
+  note?: string;
 }
 
 export interface HostingConfig {
@@ -42,16 +34,47 @@ export interface HostingConfig {
   httpsError?: string;
 }
 
+/** Config as served by GET /api/config (password hash removed, derived values added). */
 export interface VaultConfig {
-  version: number;
+  version: 2;
   network: NetworkName;
   storageMode: StorageMode;
-  setupState: SetupState;
-  hasAdminPassword?: boolean;
-  authMode?: 'password' | 'wallet';
-  wallet?: WalletPublic;
-  permafrost?: PermafrostConfig;
-  contracts: ContractConfig[];
+  authMode: AuthMode;
+  esploraUrl?: string;
+  vault?: VaultKey;
+  addressBook: AddressBookEntry[];
   hosting?: HostingConfig;
-  manifestConfig?: import('./manifest-types').ManifestConfig;
+  hasAdminPassword: boolean;
+  chainApiUrl: string;
+  vaultAddress?: string;
+}
+
+export interface Prevout {
+  txid: string;
+  vout: number;
+  amount: number;
+  script: string;
+}
+
+/** Unsigned send transaction as relayed to co-signers. */
+export interface SendProposal {
+  network: NetworkName;
+  tx: string;
+  prevouts: Prevout[];
+}
+
+export type UserCredentialPublic = { type: 'passkey' } | { type: 'bitcoin'; address: string };
+
+export interface UserPublic {
+  id: string;
+  label: string;
+  role: 'admin' | 'user';
+  credential: UserCredentialPublic;
+}
+
+export interface Invite {
+  code: string;
+  role: 'admin' | 'user';
+  usesLeft: number;
+  expiresAt: number;
 }

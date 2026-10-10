@@ -1,54 +1,42 @@
 # Portable Mode
 
-Portable mode (`encrypted-portable` storage) keeps your entire vault config in server memory only. Nothing is written to disk. The only persistent copy of your keys is the encrypted backup file you download to your own machine.
+Portable mode (`encrypted-portable` storage) keeps the instance configuration in server memory only. Nothing is written to disk. The persistent copy of the configuration is the encrypted backup file the admin downloads.
 
-This mode is best for **air-gapped or temporary setups** where no data should remain on the server. For most use cases, prefer `persistent` or `encrypted-persistent` modes.
+Portable mode is available with admin-password sign-in. It suits **temporary or ephemeral servers** where no data should remain on disk. For most setups, `persistent` or `encrypted-persistent` is simpler.
 
 ## What the Encrypted Config Contains
 
-A single file holds everything your instance needs:
+- **Vault public key package** — group key, per-party public shares, threshold
+- **Address book**
+- **Hosting** — domain, port, path, HTTPS settings
+- **Chain API** — custom Esplora URL, if set
+- **Sign-in settings** — the admin password hash
+- **Network** — mainnet, testnet4 or signet
 
-- **Wallet** — internal BTC keypair (for SDK protocol signatures)
-- **DKG shares** — threshold key material, combined ML-DSA public key, FROST aggregate BTC key, party count, threshold parameters
-- **Contracts** — registered contract addresses, ABIs, methods
-- **Hosting** — domain, port, HTTPS settings
-- **Manifest** — project manifest config
-- **Users** and invites — wallet auth mode only
-- **Network** — testnet/mainnet selection
-
-If you lose this file, **everything is unrecoverable.**
+It contains **no key shares**. The share files held by the parties control the vault. A lost configuration loses the address book and settings, not funds: an admin can reconnect a fresh instance to the vault with **Use existing share file** in the DKG step.
 
 ## Initial Setup Flow
 
-1. **Install wizard:** choose network, auth mode (Admin Password or OPWallet), select **Encrypted Portable** as storage mode.
-2. **DKG ceremony:** complete the distributed key generation with all parties. The ceremony generates both ML-DSA threshold signing keys and FROST BTC threshold keys. The FROST aggregate key becomes the vault's BTC address — an internal wallet for SDK protocol signatures is auto-generated (no user action required).
-3. **Download your encrypted config.** A persistent banner appears at the top of every page after DKG completes. Click it, enter a password, and save the `.enc` file somewhere safe.
+1. **Install wizard:** choose the network, admin-password sign-in, and **Encrypted Portable** storage.
+2. **DKG ceremony:** run the key generation with all parties. Each party downloads its share file.
+3. **Download the encrypted config.** A banner appears at the top of every page once the vault exists. Click it, enter a password, and save the `.enc` file.
 
-The banner stays visible until you click download. Do not dismiss it. If the server restarts before you download, your keys are gone.
+The banner stays visible until the config is downloaded.
 
-## Returning to a Session
+## Returning After a Restart
 
-After a server restart, your in-memory config is wiped. The instance returns to a fresh state and shows the install wizard.
-
-To restore:
+When the server restarts, the in-memory config is gone and the instance shows the install wizard.
 
 1. Visit the instance URL.
-2. On the install wizard's first step, click **Restore from Backup**.
-3. Enter the password you used when downloading the config.
-4. Select your `.enc` file.
-5. The config loads into memory and the instance is operational again.
+2. On the first wizard step, click **Restore from Backup**.
+3. Select the `.enc` file and enter its password.
+4. The config loads into memory and the instance is operational.
 
-You will need to download the config again at the end of each session if you made changes (new contracts, manifest updates, etc.).
+Download a fresh backup after changes you want to keep (address book edits, hosting changes).
 
-## How Other Users Experience It
+## How Co-signers Experience It
 
-**Password auth mode:**
-Joiners do not need any password. They visit the instance URL and land directly on the signing page (assuming setup is complete). They participate in signing ceremonies by loading their own DKG share file. The admin password only protects admin operations on the backend (settings, contract management, wallet generation).
-
-**Wallet auth mode:**
-Joiners authenticate via OPWallet (ML-DSA signature), or use a session code URL the admin shares with them (`?session=CODE`). Session codes are temporary access tokens that bypass wallet authentication for a single ceremony.
-
-In either mode, joiners only have access while the server is running and the admin's config is loaded. If the admin has not restored their config since the last server restart, joiners see the install wizard instead.
+Co-signers need no password. They open the session link the initiator shares and load their own share file. They can only connect while the server is running with the config loaded; before the admin restores, they see the install wizard.
 
 ## Server Restart Behavior
 
@@ -56,25 +44,21 @@ When the server process restarts (crash, redeploy, host reboot):
 
 - The in-memory config is cleared.
 - `/api/status` returns `{ state: 'fresh' }`.
-- Anyone visiting the URL — admin or joiner — sees the install wizard.
-- The admin must restore from their encrypted backup before joiners can connect.
-- Joiners who arrive before the admin restores cannot do anything useful.
+- Everyone visiting the URL sees the install wizard until the admin restores.
 
-There is no automatic restoration. Portable mode is single-session by design.
+There is no automatic restoration.
 
 ## Trade-offs
 
 | Pro | Con |
 |-----|-----|
-| No keys on the server filesystem | Lost config file = lost keys |
-| Suitable for air-gapped setups | Admin must export after every change |
-| Server can be ephemeral | Joiners depend on admin being available to restore |
-| No server-side encryption secrets | Single point of failure (the local backup file) |
+| Nothing on the server filesystem | Admin must restore after every restart |
+| Server can be ephemeral | Admin must re-export after changes |
+| No server-side encryption secrets | Co-signers depend on the admin restoring first |
 
 ## Recommendations
 
-- **Back up the encrypted config in multiple places** (encrypted USB, password manager attachment, etc.)
-- **Use a strong password** for the encrypted config — it's all that protects your keys
-- **Test restoration** before relying on portable mode in production
-- **Re-export after every change** that matters (new contract, updated manifest, added user)
-- **Consider `encrypted-persistent` instead** for most use cases — same encryption, but the server stores the encrypted file so you don't need to upload it each session
+- Keep the encrypted config in more than one place.
+- Use a strong password for the backup.
+- Test restoration before relying on portable mode.
+- Consider `encrypted-persistent` instead: same encryption, but the server keeps the encrypted file so a restart only needs the password.

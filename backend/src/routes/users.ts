@@ -1,51 +1,50 @@
 import { Router, type Request, type Response, type RequestHandler } from 'express';
-import type { UserStore, Role } from '../lib/users.js';
+import { toPublic, type UserStore, type Role } from '../lib/users.js';
+import { isValidSignInAddress } from '../lib/btc-message.js';
+
+const isRole = (r: unknown): r is Role => r === 'admin' || r === 'user';
 
 export function userRoutes(userStore: UserStore, requireAdmin: RequestHandler): Router {
   const r = Router();
 
   r.get('/', requireAdmin, (_req: Request, res: Response) => {
-    res.json({ users: userStore.listUsers() });
+    res.json({ users: userStore.listUsers().map(toPublic) });
   });
 
+  /** Add a user identified by a Bitcoin address */
   r.post('/', requireAdmin, (req: Request, res: Response) => {
-    const { address, role, label } = req.body as { address?: string; role?: Role; label?: string };
-    if (!address || !role || !label) {
-      res.status(400).json({ error: 'address, role, and label required' });
-      return;
-    }
-    if (role !== 'admin' && role !== 'user') {
-      res.status(400).json({ error: 'role must be "admin" or "user"' });
-      return;
-    }
+    const { label, role, address } = req.body as { label?: string; role?: unknown; address?: string };
+    const cleanLabel = (label || '').trim().slice(0, 64);
+    const addr = (address || '').trim();
+    if (!cleanLabel || !isRole(role)) { res.status(400).json({ error: 'label and role ("admin" or "user") required' }); return; }
+    if (!isValidSignInAddress(addr)) { res.status(400).json({ error: 'Invalid Bitcoin address' }); return; }
     try {
-      const user = userStore.addUser(address, role, label);
-      res.json({ ok: true, user });
+      const user = userStore.addUser(cleanLabel, role, { type: 'bitcoin', address: addr });
+      res.json({ ok: true, user: toPublic(user) });
     } catch (e) {
       res.status(409).json({ error: (e as Error).message });
     }
   });
 
-  r.delete('/:address', requireAdmin, (req: Request, res: Response) => {
+  r.patch('/:id', requireAdmin, (req: Request, res: Response) => {
+    const { role } = req.body as { role?: unknown };
+    if (!isRole(role)) { res.status(400).json({ error: 'role must be "admin" or "user"' }); return; }
     try {
-      userStore.removeUser(req.params.address!);
+      userStore.updateRole(req.params.id!, role);
       res.json({ ok: true });
     } catch (e) {
-      res.status(404).json({ error: (e as Error).message });
+      const msg = (e as Error).message;
+      res.status(msg === 'User not found' ? 404 : 409).json({ error: msg });
     }
   });
 
-  r.patch('/:address', requireAdmin, (req: Request, res: Response) => {
-    const { role } = req.body as { role?: Role };
-    if (!role || (role !== 'admin' && role !== 'user')) {
-      res.status(400).json({ error: 'role must be "admin" or "user"' });
-      return;
-    }
+  r.delete('/:id', requireAdmin, (req: Request, res: Response) => {
     try {
-      userStore.updateRole(req.params.address!, role);
+      userStore.removeUser(req.params.id!);
       res.json({ ok: true });
     } catch (e) {
-      res.status(404).json({ error: (e as Error).message });
+      const msg = (e as Error).message;
+      res.status(msg === 'User not found' ? 404 : 409).json({ error: msg });
     }
   });
 
@@ -60,14 +59,16 @@ export function inviteRoutes(userStore: UserStore, requireAdmin: RequestHandler)
   });
 
   r.post('/', requireAdmin, (req: Request, res: Response) => {
-    const { role, maxUses, expiresAt } = req.body as {
-      role?: Role; maxUses?: number; expiresAt?: number;
-    };
-    if (!maxUses || !expiresAt) {
-      res.status(400).json({ error: 'maxUses and expiresAt required' });
+    const { role, maxUses, expiresAt } = req.body as { role?: unknown; maxUses?: unknown; expiresAt?: unknown };
+    if (typeof maxUses !== 'number' || !Number.isInteger(maxUses) || maxUses < 1) {
+      res.status(400).json({ error: 'maxUses must be a positive integer' });
       return;
     }
-    const invite = userStore.createInvite(role || 'user', maxUses, expiresAt);
+    if (typeof expiresAt !== 'number' || expiresAt <= Date.now()) {
+      res.status(400).json({ error: 'expiresAt must be a future timestamp' });
+      return;
+    }
+    const invite = userStore.createInvite(isRole(role) ? role : 'user', maxUses, expiresAt);
     res.json({ ok: true, invite });
   });
 
@@ -76,14 +77,12 @@ export function inviteRoutes(userStore: UserStore, requireAdmin: RequestHandler)
     res.json({ ok: true });
   });
 
-  // ── Everybody visibility setting ──
-
   r.get('/settings/visibility', requireAdmin, (_req: Request, res: Response) => {
     res.json({ everybodyCanRead: userStore.getEverybodyCanRead() });
   });
 
   r.post('/settings/visibility', requireAdmin, (req: Request, res: Response) => {
-    const { everybodyCanRead } = req.body as { everybodyCanRead?: boolean };
+    const { everybodyCanRead } = req.body as { everybodyCanRead?: unknown };
     if (typeof everybodyCanRead !== 'boolean') {
       res.status(400).json({ error: 'everybodyCanRead must be a boolean' });
       return;

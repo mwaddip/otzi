@@ -1,21 +1,17 @@
 import { useState, useEffect, useCallback } from 'react';
 import { InstallWizard } from './components/InstallWizard';
 import { DKGWizard } from './components/DKGWizard';
-import { SigningPage } from './components/SigningPage';
+import { VaultPage } from './components/VaultPage';
 import { Settings } from './components/Settings';
-import { getStatus, hasAdminToken, getAuthMe, getConfig, unlock } from './lib/api';
-import { WalletAuth } from './components/WalletAuth';
+import { SignIn } from './components/SignIn';
 import { PortableConfigBanner } from './components/PortableConfigBanner';
+import { getStatus, getAuthMe, unlock, isAdminSession, type StatusResponse } from './lib/api';
 import { toggleTheme, getTheme } from './lib/theme';
-import type { ManifestConfig } from './lib/manifest-types';
 import './styles/global.css';
 import './styles/ceremony.css';
 
-type View = 'loading' | 'wizard' | 'unlock' | 'walletAuth' | 'dkg' | 'signing' | 'settings';
-
-export type SendPrefill =
-  | { type: 'contract'; contractAddress: string; method: string }
-  | { type: 'btc' };
+type View = 'loading' | 'wizard' | 'unlock' | 'signIn' | 'dkg' | 'vault' | 'settings';
+type ReadyStatus = Extract<StatusResponse, { state: 'ready' }>;
 
 /** Inline SVG icon — Ötzi segmented Ö (single character for favicons/small contexts) */
 export function OtziLogo({ size = 32, className }: { size?: number; className?: string }) {
@@ -98,130 +94,70 @@ export function ThemeToggle({ fixed }: { fixed?: boolean } = {}) {
 
 export function App() {
   const [view, setView] = useState<View>('loading');
-  const [sendPrefill, setSendPrefill] = useState<SendPrefill | null>(null);
-  const [pendingSessionCode, setPendingSessionCode] = useState<string | null>(() => {
-    const params = new URLSearchParams(window.location.search);
-    const s = params.get('session');
-    return s && s.trim().length >= 6 ? s.trim().toUpperCase() : null;
+  const [status, setStatus] = useState<ReadyStatus | null>(null);
+  const [sessionCode, setSessionCode] = useState<string | null>(() => {
+    const s = new URLSearchParams(window.location.search).get('session');
+    return s && /^[A-Za-z0-9]{6}$/.test(s.trim()) ? s.trim().toUpperCase() : null;
   });
-  const [portableConfigPending, setPortableConfigPending] = useState(false);
-  const [portableConfigDownloaded, setPortableConfigDownloaded] = useState(false);
+
+  // The code lives in state; drop it from the URL so a reload does not re-join
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).has('session')) {
+      window.history.replaceState(null, '', window.location.pathname);
+    }
+  }, []);
+  const [backupDownloaded, setBackupDownloaded] = useState(false);
 
   const checkStatus = useCallback(async () => {
     try {
-      const status = await getStatus();
-      if (status.state === 'fresh') {
-        setView('wizard');
-      } else if (status.state === 'locked') {
-        setView('unlock');
-      } else if (status.setupState) {
-        // Check wallet auth — skip if session code present (it's a temporary access token)
-        if (status.authMode === 'wallet' && !pendingSessionCode) {
-          try {
-            const me = await getAuthMe();
-            if (!me.authenticated) {
-              setView('walletAuth');
-              return;
-            }
-          } catch {
-            setView('walletAuth');
-            return;
-          }
-        }
-        if (!status.setupState.dkgComplete) {
-          setView('dkg');
-        } else {
-          setView('signing');
-        }
-
-        // Portable mode admins must download their encrypted config after DKG.
-        // Banner stays visible across pages until they click download.
-        const isPortable = status.storageMode === 'encrypted-portable';
-        const dkgDone = status.setupState.dkgComplete;
-        const isAdmin = hasAdminToken();
-        setPortableConfigPending(isPortable && dkgDone && isAdmin && !portableConfigDownloaded);
+      const s = await getStatus();
+      if (s.state === 'fresh') { setView('wizard'); return; }
+      if (s.state === 'locked') { setView('unlock'); return; }
+      setStatus(s);
+      // A session link grants access to that ceremony without signing in
+      if (s.authMode === 'accounts' && !sessionCode) {
+        const me = await getAuthMe().catch(() => ({ authenticated: false }));
+        if (!me.authenticated) { setView('signIn'); return; }
       }
+      setView(s.hasVault ? 'vault' : 'dkg');
     } catch (e) {
       console.error('Failed to check status:', e);
       setView('wizard');
     }
-  }, [pendingSessionCode, portableConfigDownloaded]);
+  }, [sessionCode]);
 
-  useEffect(() => { checkStatus(); }, [checkStatus]);
+  useEffect(() => { void checkStatus(); }, [checkStatus]);
 
-  // Apply manifest theme
-  useEffect(() => {
-    let applied = false;
-    const applyTheme = async () => {
-      try {
-        const cfg = await getConfig();
-        const theme = (cfg.manifestConfig as ManifestConfig | undefined)?.manifest?.theme;
-        if (!theme) return;
-        const root = document.documentElement;
-        const isDark = root.getAttribute('data-theme') !== 'light';
-        // Pick mode-specific colors, fall back to legacy flat fields (treated as dark)
-        const colors = (isDark ? theme.dark : theme.light)
-          || (isDark ? { accent: theme.accent, accentHover: theme.accentHover, bg: theme.bg } : null);
-        if (colors?.accent) { root.style.setProperty('--accent', colors.accent); root.style.setProperty('--logo-color', colors.accent); applied = true; }
-        if (colors?.accentHover) { root.style.setProperty('--accent-hover', colors.accentHover); applied = true; }
-        if (colors?.bg) { root.style.setProperty('--bg', colors.bg); applied = true; }
-        if (theme.radius) { root.style.setProperty('--radius', theme.radius); applied = true; }
-      } catch { /* no manifest or config not loaded */ }
-    };
-    if (view === 'signing' || view === 'settings') applyTheme();
-    return () => {
-      if (applied) {
-        const root = document.documentElement;
-        root.style.removeProperty('--accent');
-        root.style.removeProperty('--logo-color');
-        root.style.removeProperty('--accent-hover');
-        root.style.removeProperty('--bg');
-        root.style.removeProperty('--radius');
-      }
-    };
-  }, [view]);
+  const joinSession = (code: string) => {
+    setSessionCode(code);
+  };
 
-  const handleSetupComplete = useCallback(() => { checkStatus(); }, [checkStatus]);
+  const showBackupBanner = !!status && status.storageMode === 'encrypted-portable' && status.hasVault
+    && isAdminSession() && !backupDownloaded && (view === 'vault' || view === 'settings');
 
   let content: React.ReactNode;
-
   if (view === 'loading') {
     content = <div className="ceremony"><div className="spinner" /></div>;
   } else if (view === 'wizard') {
-    content = <InstallWizard onComplete={handleSetupComplete} />;
+    content = <InstallWizard onComplete={() => void checkStatus()} />;
   } else if (view === 'unlock') {
-    content = <UnlockScreen onUnlocked={handleSetupComplete} />;
-  } else if (view === 'walletAuth') {
-    content = <WalletAuth onAuthenticated={(_role, _addr, sessionCode) => {
-      if (sessionCode) {
-        // Session code = temporary access — go straight to signing, skip auth
-        setPendingSessionCode(sessionCode);
-        setView('signing');
-      } else {
-        checkStatus();
-      }
-    }} />;
-  } else if (view === 'dkg') {
-    content = <DKGWizard onComplete={handleSetupComplete} initialSessionCode={pendingSessionCode} />;
-  } else if (view === 'settings') {
-    content = <Settings onBack={() => setView('signing')} onSend={(prefill) => { setSendPrefill(prefill); setView('signing'); }} />;
-  } else {
-    content = <SigningPage onSettings={() => setView('settings')} prefill={sendPrefill} onPrefillConsumed={() => setSendPrefill(null)} initialSessionCode={pendingSessionCode} />;
+    content = <UnlockScreen onUnlocked={() => void checkStatus()} />;
+  } else if (view === 'signIn') {
+    content = <SignIn onSignedIn={() => void checkStatus()} onJoinSession={joinSession} />;
+  } else if (view === 'dkg' && status) {
+    content = <DKGWizard network={status.network} onComplete={() => { setSessionCode(null); void checkStatus(); }} initialSessionCode={sessionCode} />;
+  } else if (view === 'settings' && status) {
+    content = <Settings network={status.network} authMode={status.authMode} onBack={() => setView('vault')} onStatusChange={() => void checkStatus()} />;
+  } else if (status) {
+    content = <VaultPage network={status.network} authMode={status.authMode} onSettings={() => setView('settings')} initialSessionCode={sessionCode} />;
   }
 
-  // SigningPage has its own inline ThemeToggle in the header bar
-  const showGlobalToggle = view !== 'signing';
+  // VaultPage has its own inline ThemeToggle in the header bar
+  const showGlobalToggle = view !== 'vault';
 
   return (
     <>
-      {portableConfigPending && (
-        <PortableConfigBanner
-          onDownloaded={() => {
-            setPortableConfigDownloaded(true);
-            setPortableConfigPending(false);
-          }}
-        />
-      )}
+      {showBackupBanner && <PortableConfigBanner onDownloaded={() => setBackupDownloaded(true)} />}
       {showGlobalToggle && <ThemeToggle fixed />}
       {content}
     </>

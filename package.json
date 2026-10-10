@@ -8,11 +8,16 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "dev:backend": "cd backend && npm run dev",
-    "dev:relay": "cd relay && go run . -addr :8081"
+    "dev:relay": "cd relay && go run . -addr :8081",
+    "test": "node --import tsx --test src/lib/*.test.ts"
   },
   "dependencies": {
-    "@btc-vision/post-quantum": "file:vendor/post-quantum",
     "@mwaddip/frots": "^0.1.1",
+    "@noble/curves": "^2.4.0",
+    "@noble/hashes": "^2.4.0",
+    "@scure/base": "^2.4.0",
+    "@scure/btc-signer": "^2.4.1",
+    "@simplewebauthn/browser": "^14.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
@@ -20,6 +25,7 @@
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
+    "tsx": "^4.19.0",
     "typescript": "^5.9.3",
     "vite": "^6.2.0"
   }

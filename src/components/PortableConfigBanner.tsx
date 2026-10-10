@@ -58,7 +58,7 @@ export function PortableConfigBanner({ onDownloaded }: Props) {
               Download your encrypted config
             </div>
             <div style={{ fontSize: 13, opacity: 0.85 }}>
-              Portable mode keeps everything in memory. If the server restarts before you download, all keys are lost.
+              Portable mode keeps the configuration in memory only. Download an encrypted backup to restore it after a server restart.
             </div>
           </div>
           {!expanded && (

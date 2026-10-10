@@ -5,409 +5,523 @@ Bertrand Meyer's **Design by Contract** philosophy: every module supplier
 publishes what it requires (preconditions), what it guarantees (postconditions),
 and what must always hold (invariants).
 
+Ötzi is a self-hosted Bitcoin vault. T-of-N parties hold FROST key shares of a
+single Taproot key; any T of them jointly sign spends. The server holds only
+public data.
+
 ---
 
 ## Table of Contents
 
-1. [ConfigStore](#1-configstore)
-2. [Encryption (crypto.ts / share-crypto.ts)](#2-encryption)
-3. [Binary Serialization (serialize.ts)](#3-binary-serialization)
-4. [DKG Blob Protocol (dkg.ts)](#4-dkg-blob-protocol)
-5. [Threshold Signing Protocol (threshold.ts)](#5-threshold-signing-protocol)
-6. [ThresholdMLDSASigner Adapter](#6-thresholdmldsasigner-adapter)
-7. [RelayClient](#7-relayclient)
-8. [REST API — Config Routes](#8-rest-api--config-routes)
-9. [REST API — Wallet Routes](#9-rest-api--wallet-routes)
-10. [REST API — Transaction Routes](#10-rest-api--transaction-routes)
-10a. [FROST Signing Protocol](#10a-frost-signing-protocol)
-10b. [REST API — BTC Vault Routes](#10b-rest-api--btc-vault-routes)
-11. [REST API — Balance Routes](#11-rest-api--balance-routes)
-12. [REST API — Hosting Routes](#12-rest-api--hosting-routes)
-13. [Frontend API Client (api.ts)](#13-frontend-api-client)
-14. [Type System (vault-types.ts)](#14-type-system)
+1. [Configuration Model](#1-configuration-model)
+2. [ConfigStore](#2-configstore)
+3. [Encryption](#3-encryption)
+4. [Share File (v4)](#4-share-file-v4)
+5. [Ceremony Blob Envelope](#5-ceremony-blob-envelope)
+6. [DKG Ceremony Protocol](#6-dkg-ceremony-protocol)
+7. [FROST Signing Protocol](#7-frost-signing-protocol)
+8. [Send Proposal Protocol](#8-send-proposal-protocol)
+9. [RelayClient](#9-relayclient)
+10. [Relay Server](#10-relay-server)
+11. [Chain Client (Esplora)](#11-chain-client-esplora)
+12. [REST API — Config Routes](#12-rest-api--config-routes)
+13. [REST API — BTC Routes](#13-rest-api--btc-routes)
+14. [REST API — Address Book Routes](#14-rest-api--address-book-routes)
+15. [Address Book File](#15-address-book-file)
+16. [Authentication](#16-authentication)
+17. [REST API — Auth Routes](#17-rest-api--auth-routes)
+18. [REST API — User and Invite Routes](#18-rest-api--user-and-invite-routes)
+19. [REST API — Hosting Routes](#19-rest-api--hosting-routes)
+20. [Frontend API Client](#20-frontend-api-client)
+21. [Cross-Cutting Contracts](#cross-cutting-contracts)
 
 ---
 
-## 1. ConfigStore
+## 1. Configuration Model
+
+**Modules:** `backend/src/lib/types.ts` (backend), `src/lib/vault-types.ts` (frontend)
+
+### Types
+
+| Type | Definition | Invariants |
+|---|---|---|
+| `NetworkName` | `'mainnet' \| 'testnet4' \| 'signet'` | Fixed at init. Mainnet addresses use HRP `bc`, testnet4 and signet use `tb`. |
+| `StorageMode` | `'persistent' \| 'encrypted-persistent' \| 'encrypted-portable'` | Fixed at init. |
+| `AuthMode` | `'password' \| 'accounts'` | Fixed at init. `accounts` implies `storageMode === 'persistent'`. |
+| `VaultKey` | FROST `PublicKeyPackage`, hex-encoded (see below) | Present iff the DKG ceremony has been saved. |
+| `AddressBookEntry` | `{ label: string; address: string; note?: string }` | `label` trimmed, 1–64 chars. `address` valid for the instance network. `note` ≤ 256 chars. |
+| `HostingConfig` | `{ domain, port?, path?, httpsEnabled, httpsStatus?, httpsError? }` | `httpsStatus` only set when `httpsEnabled`. `httpsError` only set when `httpsStatus === 'error'`. |
+| `VaultConfig` | see below | `version === 2`. `addressBook` is always an array. Addresses in `addressBook` are unique. |
+
+```ts
+interface VaultKey {
+  minSigners: number;                               // threshold T
+  verifyingKey: string;                             // 33-byte SEC1 hex — BIP341 output key
+  untweakedVerifyingKey: string;                    // 33-byte SEC1 hex — BIP341 internal key
+  verifyingShares: Record<string, string>;          // FROST identifier ("1".."N") → 33-byte SEC1 hex (tweaked)
+  untweakedVerifyingShares: Record<string, string>; // same keys, untweaked
+}
+
+interface VaultConfig {
+  version: 2;
+  network: NetworkName;
+  storageMode: StorageMode;
+  authMode: AuthMode;
+  adminPasswordHash?: string;   // scrypt "salt:hash", password mode only
+  esploraUrl?: string;          // chain API override (see §11)
+  vault?: VaultKey;
+  addressBook: AddressBookEntry[];
+  hosting?: HostingConfig;
+}
+```
+
+### Derived values
+
+Values derived from `VaultConfig` are computed on demand and never stored.
+
+| Value | Derivation |
+|---|---|
+| Threshold `T` | `vault.minSigners` |
+| Party count `N` | number of keys in `vault.verifyingShares` |
+| Vault address | `p2tr(xOnly(vault.untweakedVerifyingKey), network)` — key-path-only Taproot, BIP341 tweak with empty script tree. Its output key equals `xOnly(vault.verifyingKey)`. |
+| Vault output script | `OP_1 <xOnly(vault.verifyingKey)>` |
+| Chain API URL | `esploraUrl` if set, otherwise the network default (§11) |
+| Explorer URL | Chain API URL with a trailing `/api` removed |
+
+### `publicConfig(config): PublicConfig`
+
+| Aspect | Contract |
+|---|---|
+| **Precondition** | `config` is a valid `VaultConfig`. |
+| **Postcondition** | Returns a copy without `adminPasswordHash`, plus derived fields `hasAdminPassword: boolean`, `chainApiUrl: string`, and `vaultAddress?: string` (present iff `vault` is present). Never mutates the input. |
+
+### `defaultConfig(network, storageMode, authMode): VaultConfig`
+
+| Aspect | Contract |
+|---|---|
+| **Postcondition** | Returns `{ version: 2, network, storageMode, authMode, addressBook: [] }` — no `vault`, no `hosting`, no `esploraUrl`, no `adminPasswordHash`. |
+
+---
+
+## 2. ConfigStore
 
 **Module:** `backend/src/lib/config-store.ts`
 
-Manages the vault configuration lifecycle: initialization, loading, updating,
-exporting, and resetting. Acts as the single source of truth for server-side
-state.
+Single source of truth for server-side state. Holds the `VaultConfig` in memory
+and persists it according to the storage mode.
 
 ### Class Invariants
 
-- At most one `VaultConfig` instance exists in memory at a time (`this.config`).
-- `this.storageMode` always matches `this.config.storageMode` when config is loaded.
-- `encrypted-portable` mode never writes to disk. `persist()` is a no-op for that mode.
-- The on-disk file at `CONFIG_PATH` is either valid JSON (persistent mode) or
-  an encrypted ciphertext blob (encrypted-persistent mode) — never a hybrid.
+- At most one `VaultConfig` is held in memory (`this.config`).
+- `encrypted-portable` mode never writes to disk.
+- The file at `$DATA_DIR/config.json` is either plaintext JSON (`persistent`) or
+  an encrypted blob (`encrypted-persistent`) — never a hybrid.
+- In `encrypted-persistent` mode the storage password supplied to `init()` or
+  `load()` is held in memory for the lifetime of the loaded config and used for
+  every subsequent `persist()`.
 
 ### `isInitialized(): boolean`
 
 | Aspect | Contract |
 |---|---|
-| **Precondition** | None. |
-| **Postcondition** | Returns `true` iff `this.config` is non-null OR a file exists at `CONFIG_PATH`. Pure query — no side effects. |
+| **Postcondition** | `true` iff a config is loaded in memory OR a config file exists. Pure query. |
 
-### `init(network, storageMode, password?): void`
+### `init(network, storageMode, authMode, password?): void`
 
 | Aspect | Contract |
 |---|---|
-| **Precondition** | `isInitialized() === false`. If `storageMode === 'encrypted-persistent'`, `password` must be provided. |
-| **Postcondition** | `this.config` holds a fresh `defaultConfig(network, storageMode)`. Config is persisted to disk (unless portable). `isInitialized() === true`. |
-| **Exception** | Throws `'Already initialized'` if precondition violated. Throws `'Password required...'` if encrypted mode lacks password. |
+| **Precondition** | `isInitialized() === false`. `password` is provided when `storageMode === 'encrypted-persistent'`. |
+| **Postcondition** | `this.config = defaultConfig(...)`, with `hosting` taken from `$DATA_DIR/hosting-seed.json` if present (the seed file is then deleted). Persisted (unless portable). |
+| **Exception** | `'Already initialized'`; `'Password required for encrypted-persistent mode'`. |
 
 ### `load(password?): VaultConfig`
 
 | Aspect | Contract |
 |---|---|
-| **Precondition** | Config file exists at `CONFIG_PATH`. If file is encrypted, `password` must be provided and correct. |
-| **Postcondition** | `this.config` is populated. Returned config equals `this.config`. `this.storageMode` matches `config.storageMode`. Idempotent — if already loaded, returns cached config without re-reading disk. |
-| **Exception** | Throws `'Not initialized'` if no file. Throws `'Password required to unlock'` if encrypted without password. Throws on decryption failure (wrong password / corrupted). |
+| **Precondition** | A config file exists. For an encrypted file, `password` decrypts it. |
+| **Postcondition** | Config loaded; storage password retained for encrypted files. Idempotent when already loaded. |
+| **Exception** | `'Not initialized'`; `'Password required to unlock'`; decryption failure on a wrong password. |
 
 ### `get(): VaultConfig`
 
 | Aspect | Contract |
 |---|---|
-| **Precondition** | `this.config !== null` (i.e., `init()` or `load()` was called). |
-| **Postcondition** | Returns the current in-memory config. Pure query — no side effects. |
-| **Exception** | Throws `'Config not loaded'`. |
+| **Precondition** | Config loaded. |
+| **Postcondition** | Returns the in-memory config. Pure query. |
+| **Exception** | `'Config not loaded'`. |
 
-### `update(patch, password?): VaultConfig`
-
-| Aspect | Contract |
-|---|---|
-| **Precondition** | `this.config !== null`. If `storageMode === 'encrypted-persistent'`, `password` should be provided for persistence. |
-| **Postcondition** | `this.config` is the shallow merge of old config and `patch`. Persisted to disk (unless portable). Returns updated config. |
-| **Exception** | Throws `'Config not loaded'`. |
-
-### `importPortable(config): void`
+### `update(patch): VaultConfig`
 
 | Aspect | Contract |
 |---|---|
-| **Precondition** | `config` is a valid `VaultConfig` object. |
-| **Postcondition** | `this.config = config`, `this.storageMode = 'encrypted-portable'`. Nothing written to disk. |
+| **Precondition** | Config loaded. |
+| **Postcondition** | `this.config` is the shallow merge of the old config and `patch`. Persisted with the retained storage password (unless portable). Returns the new config. |
 
-### `exportConfig(): string`
+### `replace(config, password?): void`
 
 | Aspect | Contract |
 |---|---|
-| **Precondition** | `this.config !== null`. |
-| **Postcondition** | Returns `JSON.stringify(this.config)`. Pure query. |
-| **Exception** | Throws `'Config not loaded'`. |
+| **Precondition** | `config` is a valid `VaultConfig`. For `encrypted-persistent`, `password` is provided. |
+| **Postcondition** | `this.config = config`; storage password retained; persisted (unless portable). Used by restore. |
 
 ### `reset(): void`
 
 | Aspect | Contract |
 |---|---|
-| **Precondition** | None. |
-| **Postcondition** | `this.config === null`, `this.storageMode === null`. Config file deleted from disk if it existed. `isInitialized() === false`. |
+| **Postcondition** | Memory cleared, storage password cleared, config file deleted. `isInitialized() === false`. |
 
 ---
 
-## 2. Encryption
+## 3. Encryption
 
-### `crypto.ts` — AES-256-GCM with PBKDF2
+### Share and backup encryption (browser) — `src/lib/crypto.ts`
 
-**Module:** `src/lib/crypto.ts`
+- PBKDF2-SHA256, 600,000 iterations, 16-byte random salt, 12-byte random IV, AES-256-GCM.
+- Wire format: `base64(salt[16] || iv[12] || ciphertext||tag)`.
 
-#### Module Invariants
-
-- `PBKDF2_ITERATIONS = 600_000` (OWASP recommendation).
-- Salt is 16 bytes, IV is 12 bytes, both cryptographically random per encryption.
-- Wire format: `base64(salt[16] || iv[12] || ciphertext)`.
-
-#### `encrypt(data, password): Promise<string>`
-
-| Aspect | Contract |
+| Function | Contract |
 |---|---|
-| **Precondition** | `data` is a non-null `Uint8Array`. `password` is a non-empty string. Web Crypto API available. |
-| **Postcondition** | Returns a base64 string encoding `salt + iv + AES-256-GCM(data)`. A fresh random salt and IV are generated. The same plaintext + password yields a different ciphertext each call. |
+| `encrypt(data, password)` | Fresh salt and IV per call. Same input yields a different ciphertext each call. |
+| `decrypt(encoded, password)` | `decrypt(encrypt(d, pw), pw) === d`. Throws on wrong password or corruption (GCM tag failure). |
 
-#### `decrypt(encoded, password): Promise<Uint8Array>`
+### Config and backup encryption (server) — `backend/src/lib/encryption.ts`
 
-| Aspect | Contract |
-|---|---|
-| **Precondition** | `encoded` is a base64 string produced by `encrypt()`. `password` matches the password used during encryption. |
-| **Postcondition** | Returns the original plaintext bytes. `decrypt(encrypt(data, pw), pw) === data`. |
-| **Exception** | Throws `DOMException` (Web Crypto) on wrong password or corrupted ciphertext — the AES-GCM authentication tag fails. |
-
-### `share-crypto.ts` — Share File Decryption
-
-**Module:** `src/lib/share-crypto.ts`
-
-#### `decryptShareFile(file, password): Promise<DecryptedShare>`
-
-| Aspect | Contract |
-|---|---|
-| **Precondition** | `file` is a valid `ShareFile` with `version >= 1`. `file.encrypted` is a base64 blob produced by `encrypt()` with the given `password`. |
-| **Postcondition** | Returns a `DecryptedShare` where: `publicKey`, `partyId`, `threshold`, `parties`, `level` are copied from `file`; `shareBytes` is the raw decrypted binary; `keyShare` is a deserialized `ThresholdKeyShare`; `K` and `L` match the security level. |
-| **Exception** | Throws on wrong password (AES-GCM auth failure). Throws `'Unknown share version'` if binary format version !== 0x02. |
+- PBKDF2-SHA256, 600,000 iterations, 16-byte salt, 12-byte IV, AES-256-GCM.
+- Wire format: `base64(salt[16] || iv[12] || tag[16] || ciphertext)`.
+- `decryptConfig(encryptConfig(s, pw), pw) === s`. Throws on wrong password.
 
 ---
 
-## 3. Binary Serialization
+## 4. Share File (v4)
 
-**Module:** `src/lib/serialize.ts`
+**Module:** `src/lib/share-file.ts`
 
-Converts `ThresholdKeyShare` objects to/from compact binary representation using
-23-bit polynomial coefficient packing.
+Each party's secret FROST key share, encrypted with a password chosen by that
+party. Share files never leave the party's browser except as a download.
 
-### Module Invariants
+### File format (JSON on disk)
 
-- Version byte is always `0x02`.
-- Polynomial coefficients are in `[0, Q)` where `Q = 8380417`.
-- Each polynomial packs 256 coefficients into exactly 736 bytes (23 bits each).
-- `deserializeKeyShare(serializeKeyShare(share, K, L))` yields an equivalent share with the same `K` and `L`.
+```ts
+interface ShareFile {
+  version: 4;
+  network: NetworkName;
+  internalKey: string;   // 33-byte SEC1 hex — vault BIP341 internal key
+  partyId: number;       // 0-based party index; FROST identifier = partyId + 1
+  threshold: number;     // T
+  parties: number;       // N
+  encrypted: string;     // §3 browser encryption of the UTF-8 JSON payload
+}
 
-#### `serializeKeyShare(share, K, L): Uint8Array`
+// Decrypted payload
+interface SharePayload {
+  keyPackage: {
+    identifier: string;              // decimal
+    signingShare: string;            // 32-byte hex scalar
+    verifyingShare: string;          // 33-byte SEC1 hex
+    verifyingKey: string;            // 33-byte SEC1 hex
+    minSigners: number;
+    untweakedVerifyingKey: string;   // 33-byte SEC1 hex
+    untweakedSigningShare: string;   // 32-byte hex scalar
+    untweakedVerifyingShare: string; // 33-byte SEC1 hex
+  };
+  publicKeyPackage: VaultKey;        // §1
+  network: NetworkName;              // equals the header network
+}
+```
+
+Download filename: `otzi-share-<network>-p<partyId+1>-<last 8 chars of vault address>.json`.
+
+### `encryptShareFile(keyPackage, publicKeyPackage, network, partyId, password): Promise<ShareFile>`
 
 | Aspect | Contract |
 |---|---|
-| **Precondition** | `share` is a valid `ThresholdKeyShare` with: `share.rho` (32 bytes), `share.key` (32 bytes), `share.tr` (64 bytes). `K` and `L` are positive integers matching the security level. Each `SecretShare` in `share.shares` has exactly `L` s1 polynomials, `K` s2 polynomials, `L` s1Hat polynomials, `K` s2Hat polynomials, each of 256 `Int32` coefficients in `[0, Q)`. |
-| **Postcondition** | Returns a `Uint8Array` of exactly `4 + 128 + 2 + numShares * (2 + (2L+2K) * 736)` bytes. First byte is `0x02`. Negative coefficients are normalized to `[0, Q)` via `c + Q`. |
+| **Precondition** | `keyPackage` and `publicKeyPackage` come from the same `dkgFinalize`. `keyPackage.identifier === partyId + 1`. |
+| **Postcondition** | Returns a v4 `ShareFile` whose header is derived from the packages. |
 
-#### `deserializeKeyShare(bytes): { share, K, L }`
+### `decryptShareFile(file, password): Promise<DecryptedShare>`
 
 | Aspect | Contract |
 |---|---|
-| **Precondition** | `bytes[0] === 0x02`. Buffer is at least 132 bytes (header + fixed fields). Remaining bytes are consistent with the embedded `numShares`, `K`, and `L` values. |
-| **Postcondition** | Returns `{ share, K, L }` where `share` is a reconstructed `ThresholdKeyShare`. All polynomial coefficients are in `[0, 2^23)`. |
-| **Exception** | Throws `'Unknown share version'` if `bytes[0] !== 0x02`. |
+| **Precondition** | `file` parsed from JSON. |
+| **Postcondition** | Returns `{ network, internalKey, partyId, threshold, parties, keyPackage, publicKeyPackage }` with frots-native types (bigints, `Uint8Array`s, `Map`s). Every check below has passed. |
+| **Checks** | `version === 4`. Payload `network` equals the header `network`. `keyPackage.identifier === partyId + 1`. `keyPackage.untweakedVerifyingKey`, `publicKeyPackage.untweakedVerifyingKey` and `internalKey` are equal. `keyPackage.verifyingKey === publicKeyPackage.verifyingKey`. `keyPackage.verifyingShare === publicKeyPackage.verifyingShares[identifier]`. `G·signingShare === verifyingShare` and `G·untweakedSigningShare === untweakedVerifyingShare`. `minSigners === threshold`. Share count `=== parties`. |
+| **Exception** | Wrong password (GCM failure); `'Unsupported share file version'`; `'Share file is corrupted'` on any failed check. |
+
+### Vault membership
+
+Before a decrypted share is used, the caller compares `network` with the
+instance network and, when the instance config is readable, `internalKey` with
+`vault.untweakedVerifyingKey`. A mismatch is rejected with
+`'This share file belongs to a different vault'`.
 
 ---
 
-## 4. DKG Blob Protocol
+## 5. Ceremony Blob Envelope
 
 **Module:** `src/lib/dkg.ts`
 
-Encodes/decodes DKG ceremony messages as base64 JSON envelopes for exchange
-between parties (copy-paste or relay).
-
-### Envelope Invariants
+### Envelope invariants
 
 - Every blob is `base64(JSON({ v: 2, type, from, to, sid, data }))`.
-- `sid` is the first 16 hex characters of the 32-byte session ID — enough to
-  detect session mismatch without leaking the full ID.
-- `to === -1` means broadcast; `to >= 0` means private to that party.
+- `type ∈ { 'session', 'frost-r1', 'frost-r2', 'frost-sign-r1', 'frost-sign-r2' }`.
+- `sid` is the first 16 hex characters of the 32-byte session ID.
+- `to === -1` is a broadcast; `to >= 0` addresses one party.
 - `data` is hex-encoded binary payload.
+- A receiver drops blobs whose `sid` differs from its session, whose `from` is
+  itself, or whose `to` is neither `-1` nor its own party ID.
 
-### Blob Type Contracts
+### Blob types
 
-| Function | Type | Preconditions | Postconditions |
-|---|---|---|---|
-| `encodeSessionConfig(t, n, level, sessionId)` | `session` | `t <= n`, `level` in `{44,65,87,128,192,256}`, `sessionId` is 32 bytes | Returns blob containing JSON `{t, n, level, sid}`. `from=0, to=-1`. |
-| `decodeSessionConfig(blob)` | `session` | Valid base64 blob with `type === 'session'` | Returns `SessionConfig` or `null` on invalid input. |
-| `encodePhase1Broadcast(broadcast, sid)` | `p1` | `broadcast.rhoCommitment` is 32 bytes. Each bitmask commitment is 32 bytes. | Binary layout: `1B partyId + 32B rho + N*(2B bitmask + 32B commitment)`. |
-| `encodePhase2Broadcast(broadcast, sid)` | `p2pub` | `broadcast.rho` is 32 bytes. | Binary layout: `1B partyId + 32B rho`. |
-| `encodePhase2Private(priv, target, sid)` | `p2priv` | Each bitmask reveal is 32 bytes. | `to = targetPartyId` (private message). |
-| `encodePhase3Private(priv, target, sid)` | `p3priv` | Each polynomial has 256 `Int32` coefficients. | Appends SHA-256 checksum (32 bytes) for integrity. `to = targetPartyId`. |
-| `decodePhase3Private(blob)` | `p3priv` | Blob is valid and `>= 32` bytes of data. | Verifies SHA-256 checksum. Validates all coefficients in `[0, Q)` where `Q = 8380417`. Returns `null` on integrity failure or out-of-range coefficients. |
-| `encodePhase4Broadcast(broadcast, sid)` | `p4` | `broadcast.aggregate` is an array of `Int32Array[256]`. | Binary layout: `1B partyId + 1B numPolys + polys + 32B SHA-256 checksum`. `to = -1`. |
-| `decodePhase4Broadcast(blob)` | `p4` | Blob is valid and `>= 32` bytes of data. | Verifies SHA-256 checksum. Returns `null` on integrity failure. |
+| Type | Layout of `data` | Sender → Receiver |
+|---|---|---|
+| `session` | UTF-8 JSON `{ t, n, network, sid }` (`sid` = full 32-byte hex) | party 0 → all |
+| `frost-r1` | `1B partyId ‖ 1B count ‖ count×33B commitment ‖ 33B proof.R ‖ 32B proof.z (BE)` | each → all |
+| `frost-r2` | `1B sender partyId ‖ 1B recipient partyId ‖ 32B signingShare (BE)` | each → each other (private) |
+| `frost-sign-r1` | `1B partyId ‖ 1B count ‖ count×(2B identifier LE ‖ 33B hiding ‖ 33B binding)` | each signer → all |
+| `frost-sign-r2` | `1B partyId ‖ 1B count ‖ count×(2B identifier LE ‖ 32B share BE)` | each signer → all |
 
-### `identifyBlob(blob): BlobInfo | null`
+`partyIdToFrostId(p) = BigInt(p + 1)`; `frostIdToPartyId(id) = Number(id) - 1`.
 
-| Aspect | Contract |
-|---|---|
-| **Precondition** | None (accepts arbitrary strings). |
-| **Postcondition** | Returns `{ type, from, to, sid }` if blob is a valid v2 envelope, `null` otherwise. Pure query. |
-
-### `getKL(level): { K, L }`
-
-| Aspect | Contract |
-|---|---|
-| **Precondition** | `level` is one of `{44, 65, 87, 128, 192, 256}`. |
-| **Postcondition** | Returns the ML-DSA parameter pair: `44/128 -> {4,4}`, `65/192 -> {6,5}`, `87/256 -> {8,7}`. |
-| **Exception** | Throws `'Unknown security level'` for any other value. |
+Decoders return `null` (never throw) on malformed input.
 
 ---
 
-## 5. Threshold Signing Protocol
+## 6. DKG Ceremony Protocol
 
-**Module:** `src/lib/threshold.ts`
+**Modules:** `src/components/DKGWizard.tsx`, `src/lib/dkg.ts`, `@mwaddip/frots`
 
-Implements a 3-round threshold ML-DSA signing protocol with blob-based
-message exchange.
+Generates the vault key. All N parties run the ceremony in their own browsers
+over one relay session. No party ever holds another party's share.
 
-### Session Invariants
+### Parameters
 
-- `session.msgPrefix` is the first 16 hex chars of `session.message` — used to
-  validate that all parties are signing the same message.
-- `session.activePartyIds` contains exactly `T` party IDs (the threshold quorum).
-- Party ordering is canonically sorted (`[...ids].sort((a,b) => a-b)`) in
-  rounds 2, 3, and combine — all parties must agree on ordering.
-- Each collection map (`collectedRound*`) is keyed by `partyId` and rejects
-  duplicates.
+- `2 <= T <= N <= maxParties`, where `maxParties` is reported by the relay (§10).
+- `network` is the instance network.
 
-### `createSession(message, share, activePartyIds): SigningSession`
+### Steps
 
-| Aspect | Contract |
-|---|---|
-| **Precondition** | `message` is non-empty `Uint8Array`. `share` is a valid `DecryptedShare`. `activePartyIds.length === share.threshold`. `share.partyId` is in `activePartyIds`. |
-| **Postcondition** | Returns a fresh `SigningSession` with all collection maps empty, all round states null, `signature` null. `instance` is a `ThresholdMLDSA` created with the share's security level, threshold, and party count. |
+| Step | Action | Advances when |
+|---|---|---|
+| `join` | Party 0 creates a relay session for N parties; others join with the session code. On relay `ready` every party shows the session fingerprint (§9); parties compare it out of band and each confirms it with **Fingerprint matches**. After confirming, party 0 generates a 32-byte session ID and broadcasts the `session` blob. Joiners accept the `session` blob only from party 0 and only if `network` equals their instance network. | Own fingerprint confirmation given and session config known. |
+| `commit` | `dkgRound1(id, N, T, rng)`; broadcast `frost-r1`. | All N round-1 packages collected (own included), then `BARRIER:commit:<partyId>` received from all N. |
+| `shares` | `dkgRound2(secret, received)` (verifies every proof of knowledge); send one private `frost-r2` per peer. | N−1 round-2 packages collected, then `BARRIER:shares:<partyId>` received from all N. |
+| `verify` | `dkgFinalize(...)` (verifies every received share). Then all N parties FROST-sign the verification message `M` (below) with `tweaked: true`: broadcast one `frost-sign-r1` commitment, after N commitments broadcast one `frost-sign-r2` share (the nonces are discarded immediately after), after N shares each party runs `signAggregate` with its own full `publicKeyPackage` and checks the signature with `verifySignature(sig, M, verifyingKey)`. When its own aggregate verifies, the party sends `BARRIER:verify:<partyId>`. | Own aggregate signature verifies, then `BARRIER:verify:<partyId>` received from all N. |
+| `complete` | Shows the vault address, session fingerprint and a share-file download. | — |
 
-### `round1(session): string`
+### Verification message
 
-| Aspect | Contract |
-|---|---|
-| **Precondition** | Session was just created (or reset for retry). `session.round1State === null`. |
-| **Postcondition** | `session.round1State` is populated. `session.myRound1Hash` holds the commitment hash. Own hash is added to `collectedRound1Hashes`. Returns a base64 blob with `round=1`. |
+```
+M = taggedHash("Otzi/dkg-verify",
+      sid[32] ‖ ascii(network) ‖ untweakedVerifyingKey[33] ‖ verifyingKey[33] ‖ u8(T) ‖
+      for each identifier ascending: u16le(id) ‖ untweakedVerifyingShare[33] ‖ verifyingShare[33])
+taggedHash(tag, x) = SHA256(SHA256(tag) ‖ SHA256(tag) ‖ x)
+```
 
-### `round2(session): string`
+Each party computes `M` from its own view of the ceremony.
 
-| Aspect | Contract |
-|---|---|
-| **Precondition** | `session.round1State !== null` (round 1 completed). `collectedRound1Hashes` contains entries for all `activePartyIds` (T hashes collected, including own). |
-| **Postcondition** | `session.round2State` is populated. `session.myRound2Commitment` holds the commitment. Own commitment is added to `collectedRound2Commitments`. Returns a base64 blob with `round=2`. Hashes were passed to the library in canonically sorted party ID order. |
-| **Exception** | Throws `'round1 not completed'`. Throws `'Missing round1 hash from party X'` if any active party's hash is absent. |
+### Postconditions
 
-### `round3(session): string`
+- On success every party holds a `keyPackage` for the same vault key, has
+  proven it by contributing to a valid signature under that key, and knows that
+  every other party verified that signature too. No party reaches `complete`
+  (and no vault is saved) while any party is still unverified.
+- A party that sent inconsistent commitments or shares makes `dkgRound2`,
+  `dkgFinalize` or the verify aggregation fail; frots' cheater detection names
+  the offending identifier in the error.
+- On completion, any party holding an admin session saves the vault with
+  `POST /api/dkg/save` when it downloads its share file.
 
-| Aspect | Contract |
-|---|---|
-| **Precondition** | `session.round1State !== null` and `session.round2State !== null`. `collectedRound2Commitments` contains entries for all `activePartyIds`. |
-| **Postcondition** | `session.myRound3Response` holds the partial response. Own response is added to `collectedRound3Responses`. Returns a base64 blob with `round=3`. Commitments were passed in canonically sorted order. |
-| **Exception** | Throws if round1 or round2 not completed. Throws if missing commitments. |
+### Connecting an existing vault
 
-### `combine(session): Uint8Array | null`
+Instead of running the ceremony, an admin can load an existing share file for
+the instance network. After `decryptShareFile` succeeds, its `publicKeyPackage`
+is saved with `POST /api/dkg/save`.
 
-| Aspect | Contract |
-|---|---|
-| **Precondition** | All 3 rounds completed. `collectedRound2Commitments` and `collectedRound3Responses` contain entries for all `activePartyIds`. |
-| **Postcondition** | Returns a FIPS 204 ML-DSA signature on success, or `null` if this attempt failed (probabilistic — retry from round 1). On success, `session.signature` is set. Commitments and responses are passed in canonically sorted order. |
-| **Exception** | Throws if missing commitments or responses for any active party. |
+### Invariants
 
-### `addBlob(session, blob, expectedRound?): { ok, error? }`
-
-| Aspect | Contract |
-|---|---|
-| **Precondition** | `blob` is a string (possibly invalid). |
-| **Postcondition** | If valid: adds the blob's data to the appropriate collection map and returns `{ ok: true }`. Returns `{ ok: false, error }` (never throws) on any of: invalid format, wrong round, wrong message prefix, self-blob, party not in active set, duplicate from same party. |
-
-### `signWithRetry(session, onRound, waitForRound, maxAttempts): Promise<Uint8Array>`
-
-| Aspect | Contract |
-|---|---|
-| **Precondition** | `session` is a valid session. `onRound` broadcasts the blob. `waitForRound` resolves when all blobs for that round are collected. `maxAttempts >= 1`. |
-| **Postcondition** | Returns a valid ML-DSA signature. Each failed `combine()` resets all round state (destroys WASM state, clears collections) and retries from round 1. |
-| **Exception** | Throws `'Signing failed after N attempts'` if all attempts fail. |
-
-### `destroySession(session): void`
-
-| Aspect | Contract |
-|---|---|
-| **Precondition** | None. |
-| **Postcondition** | `round1State` and `round2State` are destroyed (WASM cleanup) and set to null. Safe to call multiple times. |
+- Ceremony state lives only in browser memory. A page refresh aborts the ceremony.
+- No round-2 share leaves a party's browser before that party confirmed the
+  session fingerprint.
+- Barrier messages are `BARRIER:<step>:<partyId>` (`commit`, `shares`, `verify`),
+  accepted only from that party.
+- Every 3 s each party re-sends everything it has produced so far (session config,
+  round-1 package, private round-2 packages, barriers, verify commitment and share),
+  including after `complete` until the session closes; receivers ignore
+  duplicates, so a lost relay message cannot stall the ceremony.
+- A round-1 package must carry exactly T commitments.
+- The creator's relay session reports `maxParties`; the wizard offers N up to it.
 
 ---
 
-## 6. ThresholdMLDSASigner Adapter
+## 7. FROST Signing Protocol
 
-**Module:** `backend/src/lib/threshold-signer.ts`
+**Modules:** `src/components/FrostSign.tsx`, `src/lib/frost-sign.ts`
 
-Adapts a pre-computed threshold ML-DSA signature to the `QuantumBIP32Interface`
-expected by the OPNet SDK's `sendTransaction()`.
+2-round FROST (RFC 9591, secp256k1-SHA256-TR) producing one BIP340 signature
+per sighash, batched in one ceremony.
 
-### Class Invariants
+### Types
 
-- `privateKey` is always `undefined` (no private key material — signature is pre-computed).
-- `isNeutered()` always returns `true`.
-- `sign()` returns the same pre-computed signature regardless of input message.
-- Key derivation operations (`derive`, `deriveHardened`, `derivePath`) are unsupported and throw.
+| Type | Definition |
+|---|---|
+| `SighashInfo` | `{ index: number; hash: string /* 32-byte hex */; type: 'key-path' }` |
+| `FrostSignatureSet` | `{ signatures: Array<{ index: number; signature: string /* 64-byte hex */ }> }` |
 
-### `constructor(precomputedSignature, publicKey)`
+### FrostSign component contract
 
 | Aspect | Contract |
 |---|---|
-| **Precondition** | `precomputedSignature` is a valid ML-DSA signature `Uint8Array`. `publicKey` is the combined DKG public key `Uint8Array`. |
-| **Postcondition** | Object is ready for use as `mldsaSigner` in `sendTransaction()`. |
-
-### `sign(_message): Uint8Array`
-
-| Aspect | Contract |
-|---|---|
-| **Precondition** | A valid pre-computed signature was provided at construction. |
-| **Postcondition** | Returns `this.precomputedSignature` unchanged. The `_message` parameter is ignored — the signature was already computed by the threshold protocol against the correct message. |
-| **Caveat** | The caller (OPNet SDK) is trusted to pass the same message that was used during the threshold signing ceremony. Misuse (different message) would produce an invalid transaction that the network rejects. |
-
-### `verify(_hash, _signature): boolean`
-
-| Aspect | Contract |
-|---|---|
-| **Precondition** | None. |
-| **Postcondition** | Always throws `Error('not implemented')`. Not used during `sendTransaction()` flow. If the OPNet SDK ever calls this, the error surfaces immediately rather than silently accepting invalid signatures. |
+| **Props** | `sighashes`, `share: DecryptedShare`, `isLeader`, `relayClient` (ready), `onSignaturesReady(sigs)`, `onCancel`. |
+| **Precondition** | Every signer computed the same `sighashes` independently (§8). |
+| **Round 1** | For each sighash: `signRound1(keyPackage, rng)`. Broadcast one `frost-sign-r1` blob carrying all commitments. |
+| **Round 2** | Runs at most once per component instance (a flag set synchronously before any work), with exactly the `T` commitment sets of the session's `T` participants, frozen at that moment: for each sighash `signRound2(keyPackage, nonces, sighash, commitments, { tweaked: true })`. The nonces are wiped right after. Broadcast one `frost-sign-r2` blob. |
+| **Aggregate** | Leader only, after `T` share sets: `signAggregate(shares, sighash, commitments, publicKeyPackage, { tweaked: true })` with the full public key package from the share file. Broadcasts `FROST-COMPLETE:` + JSON signature array. |
+| **Joiner completion** | On `FROST-COMPLETE:` from the leader, the joiner verifies every signature with `verifySignature(sig, sighash, verifyingKey)` and reports failure instead of completing if any signature is invalid. |
+| **State sync** | `FROST-STATE:<partyId>:<round>:<sentRounds>` every 500 ms and on change. Receiving a peer's state re-sends this party's blob for the peer's round. Joiners follow the leader's round. |
+| **Envelope sid** | The first sighash. Blobs with another sid are ignored. |
+| **Collection** | Each relay sender is bound to the vault party ID of its first blob; a vault party ID is bound to one relay sender. A blob whose party ID differs from its sender's binding, or a second sender claiming a bound party ID, aborts the ceremony (`'Two session participants claim party X'`). Party IDs must exist in `publicKeyPackage.verifyingShares`. A set is accepted once per sender, only with one entry per sighash and identifiers equal to the claimed party's FROST identifier. Commitments and shares are passed to frots sorted by identifier. |
+| **Abort** | `ABORT:` from the leader, or the leader leaving the relay session before completion, ends the ceremony for joiners with a message. |
 
 ---
 
-## 7. RelayClient
+## 8. Send Proposal Protocol
+
+**Modules:** `src/components/SendSession.tsx`, `src/components/ProposalReview.tsx`, `src/lib/bitcoin.ts`
+
+Every signer sees and approves exactly what it signs. Sighashes are computed by
+each signer from the transaction itself.
+
+### `SendProposal`
+
+```ts
+interface SendProposal {
+  network: NetworkName;
+  tx: string;                       // unsigned transaction, hex, no witness data
+  prevouts: Array<{ txid: string; vout: number; amount: number; script: string }>;
+}
+```
+
+### Relay messages
+
+| Message | Direction | Meaning |
+|---|---|---|
+| `PROPOSAL:` + base64(JSON `SendProposal`) | leader (party 0) → all | Sent on relay `ready` and in answer to every `PROPOSAL-REQ`. |
+| `PROPOSAL-REQ:<partyId>` | joiner → all | Sent every 2 s until a proposal is received. |
+| `REJECT:<partyId>` | joiner → all | The joiner declined. The leader shows the rejection, sends `ABORT:rejected`, and closes the session. |
+| `ABORT:<reason>` | leader → all | The leader ended the session. Joiners stop signing and show the reason. |
+
+Joiners accept `PROPOSAL:` only from party 0.
+
+### `analyzeProposal(proposal, vault, network): ProposalAnalysis`
+
+| Aspect | Contract |
+|---|---|
+| **Precondition** | `vault` is the `publicKeyPackage` from the signer's own share file (or, for the leader before the share is loaded, the instance `VaultKey`). |
+| **Postcondition** | Returns `{ txid, inputs, outputs: Array<{ address, amount, isChange }>, totalIn, totalOut, fee, vsize, feeRate, sighashes }`. `isChange` ⇔ output script equals the vault output script. `fee = totalIn − totalOut`. `vsize` assumes one 64-byte key-path signature per input. `sighashes[i] = BIP341 SIGHASH_DEFAULT preimage hash of input i` over all prevout scripts and amounts. |
+| **Rejects (throws)** | `proposal.network !== network`; input count ≠ prevout count; input `i` does not spend `prevouts[i]`; any prevout script ≠ vault output script; any input sequence ≠ `0xfffffffd`; `lockTime ≠ 0`; any output script without a standard address encoding; `fee < 0`. |
+| **Guarantee** | BIP341 sighashes commit to every input amount and script, so false prevout data yields signatures that are invalid on chain; the displayed fee is the fee of any transaction these signatures can authorize. |
+
+### Approval
+
+- The leader reviews the analysis of the prepared transaction before creating
+  the signing session, and again against its share file once loaded.
+- Each joiner reviews the analysis after loading its share file and receiving the
+  proposal. The approval screen shows the session fingerprint to compare with the
+  initiator. Signing starts only after the joiner clicks **Approve**.
+- Recipients that appear in the address book are shown with their label.
+- Joiners derive the transaction ID from the unsigned transaction.
+
+---
+
+## 9. RelayClient
 
 **Module:** `src/lib/relay.ts`
 
-E2E encrypted WebSocket relay for multi-party ceremony coordination.
+E2E encrypted WebSocket client for ceremony coordination.
 
 ### Class Invariants
 
 - `partyId === -1` until `create()` or `join()` resolves.
 - `isReady === false` until the `ready` wire message has been processed and all
   AES keys derived.
-- `peerKeys` contains exactly `N-1` AES keys (one per peer) after `isReady`.
-- `sessionCode` is non-empty after `create()` or `join()`.
-- `closed === true` after `close()` — reconnection is disabled.
-- Relay messages arriving before `isReady` are queued behind `readyGate` and
-  processed only after AES keys are available.
+- After `isReady`, `peerKeys` holds one AES-256-GCM key per peer, derived by
+  ECDH (P-256).
+- Messages arriving before `isReady` are queued and processed after the keys exist.
+- A `ready` message whose public key for this party differs from this party's own
+  ECDH public key is rejected: the client emits `'Relay returned a wrong key for
+  this party — possible interception'` and closes.
+- `closed === true` after `close()`; reconnection is disabled.
 
-### `create(parties, threshold): Promise<{ session, url }>`
+### Methods
 
-| Aspect | Contract |
-|---|---|
-| **Precondition** | `parties >= 2`, `threshold >= 1 && threshold <= parties`. No prior `create()` or `join()` on this instance. |
-| **Postcondition** | ECDH keypair generated. WebSocket connected. Server confirmed session creation. `partyId` assigned (always 0 for creator). `sessionCode` set. `token` stored in sessionStorage. Resolves with session code and shareable URL. |
-| **Exception** | Rejects on WebSocket error or server error message. |
+| Method | Precondition | Postcondition |
+|---|---|---|
+| `create(parties, threshold)` | `parties >= 2`, `1 <= threshold <= parties`. Fresh instance. | Session created; `partyId === 0`; resolves `{ session, url }`. |
+| `join(code)` | 6-character session code. Fresh instance. | `partyId` assigned; resolves on join (before `ready`). |
+| `send(to, payload)` | `isReady`. | Payload encrypted with the peer key and sent. Throws `'No AES key for party X'`. |
+| `broadcast(payload)` | `isReady`. | Payload encrypted separately for each peer and sent. |
+| `close()` | — | Socket closed, keys cleared, token removed. Idempotent. |
 
-### `join(session): Promise<void>`
+### Reconnection
 
-| Aspect | Contract |
-|---|---|
-| **Precondition** | `session` is a valid 6-character session code. No prior `create()` or `join()`. |
-| **Postcondition** | ECDH keypair generated. `partyId` assigned by server. `token` stored. Resolves when server confirms join. Does NOT wait for `ready` — that comes when all parties have joined. |
-| **Exception** | Rejects on invalid session, full session, or WebSocket error. |
+Up to 10 attempts with the saved token while the keypair is in memory. After a
+page reload the keys are gone and the client emits `'Encryption keys lost'`.
 
-### `send(to, payload): Promise<void>`
+### Session fingerprint
 
-| Aspect | Contract |
-|---|---|
-| **Precondition** | `isReady === true`. `to` is a valid peer party ID with a derived AES key. `payload` is a `Uint8Array`. |
-| **Postcondition** | `payload` is encrypted with the peer's AES key and sent over WebSocket as a `relay` wire message. |
-| **Exception** | Throws `'No AES key for party X'` if peer key not found. |
-
-### `broadcast(payload): Promise<void>`
-
-| Aspect | Contract |
-|---|---|
-| **Precondition** | `isReady === true`. At least one peer key exists. |
-| **Postcondition** | `payload` is individually encrypted and sent to each peer (N-1 messages). All sends are concurrent (`Promise.all`). |
-
-### `close(): void`
-
-| Aspect | Contract |
-|---|---|
-| **Precondition** | None. |
-| **Postcondition** | `closed = true`. WebSocket closed with code 1000. `keypair` cleared. `peerKeys` cleared. Session token removed from sessionStorage. No reconnection will occur. Idempotent. |
-
-### Reconnection Contract
-
-| Aspect | Contract |
-|---|---|
-| **Precondition** | `closed === false`. `keypair` still exists in memory (no page reload). Reconnection token available. `reconnectAttempts < maxReconnectAttempts (10)`. |
-| **Postcondition** | New WebSocket opened. `reconnect` wire message sent with saved token. On success, `reconnectAttempts` reset to 0. |
-| **Failure** | After 10 failed attempts, emits `'error'` with `'Max reconnection attempts reached'`. If keypair is lost (page reload), emits `'Encryption keys lost'` immediately. |
+`sessionFingerprint(pubkeys)` is the first 96 bits of SHA-256 over all parties'
+ECDH public keys in party order, shown as six groups of four hex digits
+(`xxxx-xxxx-xxxx-xxxx-xxxx-xxxx`). Parties compare it to detect a relay that
+substitutes keys; with every party's own key checked, a substituting relay
+produces different fingerprints for different parties.
 
 ---
 
-## 8. REST API — Config Routes
+## 10. Relay Server
+
+**Module:** `relay/` (Go)
+
+| Endpoint | Contract |
+|---|---|
+| `GET /ws` | WebSocket. Wire messages `create`, `join`, `reconnect`, `relay`. Forwards ciphertext only. Enforces `MaxSessions`, `MaxParties`, `MaxMessageBytes`, `MaxPerIP`. |
+| `GET /health` | `{ "status": "ok" }` |
+| `GET /sessions` | `{ "active": <session count>, "maxParties": <MaxParties> }` |
+
+The backend proxies `/ws` and exposes `GET /api/relay/sessions` (pass-through of
+`/sessions`; `{ active: 0, maxParties: 10 }` when the relay is unreachable).
+
+---
+
+## 11. Chain Client (Esplora)
+
+**Module:** `backend/src/lib/esplora.ts`
+
+All blockchain data comes from an Esplora-compatible REST API.
+
+### Default endpoints
+
+| Network | Chain API URL |
+|---|---|
+| `mainnet` | `https://mempool.space/api` |
+| `testnet4` | `https://mempool.space/testnet4/api` |
+| `signet` | `https://mempool.space/signet/api` |
+
+`VaultConfig.esploraUrl` overrides the default (e.g. a self-hosted mempool or electrs).
+
+### Functions
+
+| Function | Request | Contract |
+|---|---|---|
+| `getUtxos(base, address)` | `GET {base}/address/{address}/utxo` | Returns `Array<{ txid, vout, value, confirmed }>`. |
+| `getBalance(base, address)` | `GET {base}/address/{address}` | Returns `{ confirmed, unconfirmed }` in sats: `confirmed = chain funded − chain spent`, `unconfirmed = mempool funded − mempool spent`. |
+| `broadcastTx(base, hex)` | `POST {base}/tx` | Returns the txid. Throws with the API's error text on rejection. |
+| `getFeeRates(base)` | `GET {base}/v1/fees/recommended`, falling back to `GET {base}/fee-estimates` | Returns `{ low, normal, high }` sat/vB (`hourFee`/`halfHourFee`/`fastestFee`, or estimates for 6/3/1 blocks). Cached per base URL for 60 s. |
+
+Non-2xx responses throw `Error('<status> <body>')`.
+
+---
+
+## 12. REST API — Config Routes
 
 **Module:** `backend/src/routes/config.ts`
 
@@ -415,394 +529,378 @@ E2E encrypted WebSocket relay for multi-party ceremony coordination.
 
 | Aspect | Contract |
 |---|---|
-| **Precondition** | None. |
-| **Postcondition** | Returns `{ state: 'fresh' }` if not initialized, `{ state: 'locked' }` if encrypted but not unlocked, `{ state: 'ready', setupState, storageMode, network, authMode }` if loaded. Never fails. |
+| **Postcondition** | `{ state: 'fresh' }` if not initialized; `{ state: 'locked' }` if an encrypted config is not unlocked; otherwise `{ state: 'ready', network, storageMode, authMode, hasVault }`. Never fails. |
 
 ### `POST /api/init`
 
 | Aspect | Contract |
 |---|---|
-| **Precondition** | `body.network` in `{'testnet','mainnet'}`. `body.storageMode` in `{'persistent','encrypted-persistent','encrypted-portable'}`. If `storageMode === 'encrypted-persistent'`, `body.password` required. Instance must not be initialized (`store.isInitialized() === false`). |
-| **Postcondition** | Instance initialized with default config. Returns `{ ok: true }`. |
-| **Error** | 400 if missing fields or missing password. 409 if already initialized. |
+| **Precondition** | Not initialized. `network ∈ NetworkName`, `storageMode ∈ StorageMode`, `authMode ∈ AuthMode`. `password` when `storageMode === 'encrypted-persistent'`. Password mode: `adminPassword` (non-empty). Accounts mode: `storageMode === 'persistent'` and `admin: { label, credential: CredentialProof }` (§16). |
+| **Postcondition** | Instance initialized. Password mode: admin password hash stored; returns `{ ok, token, role: 'password-admin' }`. Accounts mode: credential verified, first admin user created; returns `{ ok, token, role: 'admin' }`. |
+| **Error** | 400 invalid input or failed credential proof; 409 already initialized. |
 
 ### `POST /api/unlock`
 
 | Aspect | Contract |
 |---|---|
-| **Precondition** | `body.password` is non-empty. Instance is initialized but locked (encrypted-persistent mode). |
-| **Postcondition** | Config loaded and decrypted. Returns `{ ok: true, config }` where config is sanitized (no mnemonic). |
-| **Error** | 400 if no password. 401 on wrong password or corrupted config. |
+| **Precondition** | `password`. Encrypted config on disk, not yet loaded. |
+| **Postcondition** | Config decrypted and loaded; storage password retained. Returns `{ ok: true }`. |
+| **Error** | 400 missing password; 401 wrong password or corrupted file. |
 
-### `GET /api/config`
-
-| Aspect | Contract |
-|---|---|
-| **Precondition** | Config is loaded (not fresh, not locked). |
-| **Postcondition** | Returns sanitized config (wallet mnemonic stripped). |
-| **Error** | 503 if config not loaded. |
-
-### `POST /api/config/contracts`
+### `POST /api/admin/unlock`
 
 | Aspect | Contract |
 |---|---|
-| **Precondition** | Config loaded. `body.contracts` is an array. |
-| **Postcondition** | Config updated with new contracts array. Persisted. Returns `{ ok: true }`. |
-| **Error** | 400 if `contracts` is not an array. |
+| **Precondition** | Password mode. `password` matches `adminPasswordHash`. |
+| **Postcondition** | Returns `{ ok: true, token }` with role `password-admin`. |
+| **Error** | 400 missing password or no admin password set; 401 wrong password; 503 config not loaded. |
 
-### `POST /api/config/export`
-
-| Aspect | Contract |
-|---|---|
-| **Precondition** | Config loaded. |
-| **Postcondition** | Returns `{ config: '<json string>' }`. |
-
-### `POST /api/config/import`
+### `GET /api/config` — read
 
 | Aspect | Contract |
 |---|---|
-| **Precondition** | `body.config` is a `VaultConfig` object or JSON string. |
-| **Postcondition** | Config imported in portable mode (memory-only). Returns sanitized config. |
-| **Error** | 400 if config missing or invalid JSON. |
+| **Postcondition** | `publicConfig(config)` (§1). |
+| **Error** | 503 config not loaded. |
 
-### `POST /api/dkg/save`
-
-| Aspect | Contract |
-|---|---|
-| **Precondition** | Config loaded. `body` contains `threshold`, `parties`, `level`, `combinedPubKey`, `shareData`. Optional FROST fields: `frostAggregateKey` (hex), `frostUntweakedAggregateKey` (hex), `frostLegacySig` (128-char hex). |
-| **Postcondition** | `config.permafrost` set with all provided fields. `config.setupState.dkgComplete = true`. If FROST keys present: `frostP2tr` derived from untweaked aggregate key. If `config.wallet` is absent: a throwaway BTC keypair is auto-generated for SDK protocol-level signatures. Persisted. |
-
-### `POST /api/reset`
+### `POST /api/config/chain` — admin
 
 | Aspect | Contract |
 |---|---|
-| **Precondition** | `body.confirm === 'RESET'` (exact string). |
-| **Postcondition** | All data wiped. Config file deleted. `store` returns to uninitialized state. |
-| **Error** | 400 if confirmation string is wrong. |
+| **Precondition** | `esploraUrl` is `null` (use the network default) or an `http(s)://` URL. |
+| **Postcondition** | `esploraUrl` stored (trailing `/` removed) or cleared. Returns `{ ok: true, chainApiUrl }`. |
+
+### `POST /api/dkg/save` — admin
+
+| Aspect | Contract |
+|---|---|
+| **Precondition** | `vault: VaultKey`. `2 <= minSigners <= N`. Identifiers are exactly `"1".."N"` in both share maps. Every key is a valid compressed secp256k1 point. `xOnly(verifyingKey)` equals the BIP341 key-path tweak of `xOnly(untweakedVerifyingKey)`. |
+| **Postcondition** | `config.vault` set. Returns `{ ok: true, vaultAddress }`. Saving an identical vault again is a no-op success. |
+| **Error** | 400 invalid key data; 409 a different vault is already saved. |
+
+### `POST /api/backup` — admin
+
+| Aspect | Contract |
+|---|---|
+| **Precondition** | `password`. |
+| **Postcondition** | Returns `{ encrypted }` = server encryption (§3) of `JSON({ version: 2, timestamp, config, users: { users, invites, settings } })`. |
+
+### `POST /api/restore`
+
+| Aspect | Contract |
+|---|---|
+| **Precondition** | `encrypted`, `password`. On an initialized instance: an admin token. |
+| **Postcondition** | Backup decrypted; `config` replaces the current config (the backup password becomes the storage password when the backup's storage mode is `encrypted-persistent`). In accounts mode, users, invites and settings replace the user store; in password mode the user store is emptied and no users file exists. All session tokens are revoked. Returns `{ ok: true }`. |
+| **Error** | 401 missing admin token, or wrong password / corrupted backup; 400 invalid backup format. |
+
+### `POST /api/reset` — admin
+
+| Aspect | Contract |
+|---|---|
+| **Precondition** | `confirm === 'RESET'`. |
+| **Postcondition** | Config and user store wiped. Instance is `fresh`. |
 
 ---
 
-## 9. REST API — Wallet Routes
+## 13. REST API — BTC Routes
 
-**Module:** `backend/src/routes/wallet.ts`
-
-The wallet is auto-generated during DKG save (see `POST /api/dkg/save`). There is no manual wallet generation step.
-
-### `GET /api/wallet/balance`
-
-| Aspect | Contract |
-|---|---|
-| **Precondition** | Config loaded. |
-| **Postcondition** | If no wallet configured: returns `{ balance: 0, configured: false }`. If wallet exists: queries OPNet provider for BTC balance at `frostP2tr` (preferred) or `wallet.p2tr` address. Returns `{ balance: '<satoshis>', configured: true }`. |
-
----
-
-## 10. REST API — Transaction Routes
-
-**Module:** `backend/src/routes/tx.ts`
-
-### Module Invariant — Double-Broadcast Prevention
-
-- `broadcastResults: Map<string, Result>` is an in-memory lock keyed on
-  `messageHash`.
-- Once a broadcast succeeds, the result is cached permanently (within process lifetime).
-- Once locked (set to `{}`), concurrent requests for the same hash return early.
-- On broadcast error, the lock is cleared to allow retry.
-
-### `GET /api/tx/broadcast-status/:messageHash`
-
-| Aspect | Contract |
-|---|---|
-| **Precondition** | `messageHash` is a hex string. |
-| **Postcondition** | Returns `{ broadcast: true, transactionId?, estimatedFees?, error? }` if hash is in the map, `{ broadcast: false }` otherwise. Pure query. |
-
-### `POST /api/tx/encode`
-
-| Aspect | Contract |
-|---|---|
-| **Precondition** | `body.method` is a string (method name). `body.params` is a `string[]`. `body.paramTypes` is an array of `'address' | 'u256' | 'bytes'` matching params length. |
-| **Postcondition** | Returns `{ calldata, messageHash }` where `calldata` is hex-encoded binary (4-byte SHA-256 selector + encoded params) and `messageHash` is `SHA-256(calldata)` in hex. |
-| **Encoding** | `address` → raw 32-byte hex. `u256` → `BinaryWriter.writeU256(BigInt(value))`. `bytes` → raw hex bytes. |
-
-### `POST /api/tx/simulate`
-
-| Aspect | Contract |
-|---|---|
-| **Precondition** | Config loaded. `body.contract` is a valid OPNet contract address. `body.method` exists on the contract. `body.params` matches the method signature. |
-| **Postcondition** | Returns `{ success: true, estimatedGas?, events? }` on successful simulation, or `{ success: false, revert }` if the contract call reverts. Params are converted: `address` → `Address.wrap(Buffer)`, `u256` → `BigInt`. |
-| **Error** | 400 if method not found on contract. 500 on provider/simulation failure. |
-
-### `POST /api/tx/sighash`
-
-| Aspect | Contract |
-|---|---|
-| **Precondition** | Config loaded. `config.permafrost` exists with FROST keys (`frostAggregateKey`, `frostUntweakedAggregateKey`). `body.signature` is a hex-encoded ML-DSA signature. `body.contract`, `body.method`, `body.params` define the call. |
-| **Postcondition** | Builds a template OPNet transaction with a dummy signer that captures all input sighashes. Template transactions cached server-side keyed by a random `challengeToken`. Returns `{ sighashes: [{index, hash, type}], challengeToken }`. Each sighash has `type: 'script-path'` or `'key-path'` for Taproot signing. |
-| **Error** | 400 if no DKG or missing FROST keys. 500 on transaction build failure. |
-
-### `POST /api/tx/broadcast`
-
-| Aspect | Contract |
-|---|---|
-| **Precondition** | Config loaded. `config.wallet` exists (mnemonic available). `config.permafrost` exists (DKG completed). `body.signature` is a hex-encoded ML-DSA signature. `body.contract`, `body.method`, `body.params` define the call. If `body.messageHash` provided, must not already be successfully broadcast. |
-| **Postcondition (FROST path)** | If `body.frostSignatures` and `body.challengeToken` present: retrieves cached template transactions, injects FROST Schnorr signatures into witness data (script-path → witness[2], key-path → witness[0]). Injects FROST legacy signature for key-link if configured. Broadcasts final signed transaction(s). Returns `{ success: true, transactionId, estimatedFees }`. |
-| **Postcondition (legacy path)** | If no `frostSignatures`: builds transaction with `ThresholdMLDSASigner` adapter, signs with `wallet.keypair`, and broadcasts. Returns `{ success: true, transactionId, estimatedFees }`. |
-| **Double-broadcast** | If `messageHash` was already broadcast successfully, returns cached result with `alreadyBroadcast: true`. Concurrent requests are blocked by immediate lock-set. |
-| **Error** | 400 if no wallet or no DKG. 400 if simulation reverts. 500 on broadcast failure (lock cleared for retry). |
-
----
-
-## 10a. FROST Signing Protocol
-
-**Module:** `src/lib/frost-sign.ts` (codec), `src/components/FrostSign.tsx` (UI)
-
-Implements a 2-round FROST (RFC 9591, secp256k1-SHA256-TR) threshold signing
-protocol for BIP340 Schnorr signatures. Operates over one or more sighashes
-(batched in a single round).
-
-### Types
-
-| Type | Description |
-|---|---|
-| `SighashInfo` | `{ index: number, hash: string (hex 32B), type: 'script-path' \| 'key-path' }` |
-| `FrostSignatureSet` | `{ signatures: Array<{ index: number, signature: string (hex 64B) }> }` |
-
-### Blob Protocol
-
-| Function | Type | Layout |
-|---|---|---|
-| `encodeFrostSignR1(partyId, commitments, sessionId)` | `frost-sign-r1` | `1B partyId + 1B count + N × (2B identifier LE + 33B hiding + 33B binding)` |
-| `encodeFrostSignR2(partyId, shares, sessionId)` | `frost-sign-r2` | `1B partyId + 1B count + N × (2B identifier LE + 32B share bigint BE)` |
-
-### FrostSign Component Contract
-
-| Aspect | Contract |
-|---|---|
-| **Props** | `sighashes: SighashInfo[]`, `frostKeyPackage: KeyPackage`, `frostPublicKey: string` (33B SEC1 hex), `threshold`, `partyId`, `isLeader`, `relayClient`, `relayReady`, `onSignaturesReady: (sigs) => void`, `onCancel` |
-| **Round 1** | For each sighash: `signRound1(keyPackage, rng)` → nonces + commitments. Broadcast R1 blob. Collect until `count >= threshold`. |
-| **Round 2** | For each sighash: `signRound2(keyPackage, nonces, sighash, allCommitments, { tweaked })`. `tweaked = (type === 'key-path')`. Broadcast R2 blob. |
-| **Aggregate** (leader only) | For each sighash: `signAggregate(allShares, sighash, allCommitments, pubKeyPkg, { tweaked })`. Broadcasts `FROST-COMPLETE:` + JSON. Calls `onSignaturesReady`. |
-| **Joiner** | Receives `FROST-COMPLETE:` from leader → calls `onSignaturesReady` directly. |
-| **State sync** | `FROST-STATE:{partyId}:{round}:{sentBlobNums}` broadcast every 500ms. Leader auto-advances; joiner follows leader's state. |
-
----
-
-## 10b. REST API — BTC Vault Routes
-
-**Module:** `backend/src/routes/btc.ts`
-
-Plain Bitcoin P2TR transaction construction and broadcast. No OPNet SDK involvement. All inputs are key-path Taproot spends.
+**Module:** `backend/src/routes/btc.ts`, `backend/src/lib/bitcoin.ts`
 
 ### Module Invariants
 
-- `txCache: Map<string, CachedBtcTx>` holds unsigned transactions keyed by `challengeToken`, 5-min TTL.
-- `broadcastLock: Map<string, { txid?, error?, ts }>` prevents double-broadcast, 1-hour TTL.
-- All sighashes are `SIGHASH_DEFAULT (0x00)`, key-path only.
+- Transactions are version 2, `lockTime` 0, every input sequence `0xfffffffd`
+  (BIP125 replaceable).
+- Every input is a key-path spend of the vault output script.
+- `prepared: Map<challengeToken, PreparedTx>` holds unsigned transactions for 30 minutes.
+- `broadcasts: Map<challengeToken, { txid }>` holds results for 1 hour.
+- Dust limits: destination amount ≥ 546 sats; change below 330 sats is added to the fee.
 
-### `POST /api/btc/prepare`
-
-| Aspect | Contract |
-|---|---|
-| **Precondition** | Config loaded. FROST keys configured (`frostP2tr`, `frostUntweakedAggregateKey`). `body.to` is a valid Bitcoin address for the configured network. `body.amount` is a positive integer (satoshis). `body.feeRate` is a positive number (sat/vB). |
-| **Postcondition** | Fetches UTXOs via `provider.utxoManager.getUTXOs()`. Coin selection: greedy, largest first. Builds `Transaction` directly (not Psbt). Destination output + change output (if > 546 sats) back to frostP2tr. Computes `hashForWitnessV1()` per input. Caches tx + sighashes under random `challengeToken` (5-min TTL). Returns `{ sighashes: [{index, hash, type: 'key-path'}], challengeToken, estimatedFee, changeAmount }`. |
-| **Error** | 400 if invalid address, amount, feeRate, or insufficient funds. 400 if no FROST keys. |
-
-### `POST /api/btc/broadcast`
+### `GET /api/btc/balance` — read
 
 | Aspect | Contract |
 |---|---|
-| **Precondition** | `body.challengeToken` exists in cache. `body.frostSignatures` is an array of `{ index, signature }` matching the cached input count. Each signature is 128 hex chars (64 bytes). |
-| **Postcondition** | Verifies each FROST signature via `schnorr.verify(sig, sighash, xOnlyPub)` before injection. Injects signatures as key-path witness `[64B sig]`. Broadcasts: OPNet provider for testnet, mempool.space for mainnet. Returns `{ txid }`. Cleans up cache. |
-| **Double-broadcast** | Returns cached `{ txid, alreadyBroadcast: true }` if already broadcast. |
-| **Error** | 400 if token expired/missing, signature count mismatch, invalid signature format, or BIP340 verification failure. 500 on broadcast failure (lock cleared for retry). |
+| **Precondition** | Vault saved. |
+| **Postcondition** | Returns `{ address, confirmed, unconfirmed }` (sats) via `getBalance`. |
+| **Error** | 400 no vault; 502 chain API failure. |
 
 ### `GET /api/btc/fees`
 
 | Aspect | Contract |
 |---|---|
-| **Precondition** | Config loaded (to determine network). |
-| **Postcondition** | Returns `{ low, normal, high }` in sat/vB. Fetched from mempool.space API (`hourFee`, `halfHourFee`, `fastestFee`). Cached for 60 seconds. On fetch failure: returns fallback `{ low: 1, normal: 5, high: 10, fallback: true }`. |
+| **Postcondition** | `{ low, normal, high }` sat/vB from `getFeeRates`. On chain API failure: `{ low: 1, normal: 5, high: 10, fallback: true }`. 503 while no config is loaded. |
 
----
-
-## 11. REST API — Balance Routes
-
-**Module:** `backend/src/routes/balances.ts`
-
-### `GET /api/balances`
+### `POST /api/btc/prepare` — user
 
 | Aspect | Contract |
 |---|---|
-| **Precondition** | Config loaded. |
-| **Postcondition** | If `config.permafrost` and `config.wallet` both exist: derives the OPNet vault address from `combinedPubKey + tweakedPubKey`, then queries each configured contract for `name`, `symbol`, `decimals`, `balanceOf(vaultAddr)`. Returns `{ balances: [...] }`. Non-OP-20 contracts silently skipped. If either is missing: returns `{ balances: [] }`. |
+| **Precondition** | Vault saved. `to` is a valid address for the network. `amount` is an integer ≥ 546 or `'max'`. `0 < feeRate <= 10000`. |
+| **Postcondition** | Confirmed UTXOs of the vault address are selected largest-first until they cover `amount + fee`; `'max'` spends all confirmed UTXOs with no change output and sends `total − fee`. `fee = ceil(vsize × feeRate)` with `vsize = ceil((4 × baseSize + 2 + 66 × inputs) / 4)`. Outputs: destination, then change to the vault address when change ≥ 330. Returns `{ challengeToken, proposal: SendProposal, amount, fee, change, vsize }`. |
+| **Error** | 400 invalid input, no vault, or insufficient confirmed funds (`{ error, available, needed }`); 502 chain API failure. |
+
+### `POST /api/btc/broadcast` — user
+
+| Aspect | Contract |
+|---|---|
+| **Precondition** | `challengeToken` refers to a prepared transaction. `signatures` has one `{ index, signature }` per input; each signature is 64 bytes hex. |
+| **Postcondition** | Every signature verifies under BIP340 against its input's sighash and `xOnly(vault.verifyingKey)` before anything is broadcast. Signatures are placed as key-path witnesses, the transaction is broadcast via `broadcastTx`, and `{ txid }` is returned. |
+| **Double broadcast** | A request for an already broadcast token returns `{ txid, alreadyBroadcast: true }`. A lock is taken before any work; a concurrent request for the same token gets 409 while it is held; the lock is released on failure. |
+| **Error** | 400 unknown/expired token, wrong signature count or format, or failed BIP340 verification; 502 chain API rejection. |
 
 ---
 
-## 12. REST API — Hosting Routes
+## 14. REST API — Address Book Routes
+
+**Module:** `backend/src/routes/address-book.ts`
+
+### `GET /api/address-book` — read
+
+| Aspect | Contract |
+|---|---|
+| **Postcondition** | `{ entries: AddressBookEntry[] }`. |
+
+### `PUT /api/address-book` — admin
+
+| Aspect | Contract |
+|---|---|
+| **Precondition** | `entries` is an array of at most 1000 `AddressBookEntry` values satisfying §1 invariants for the instance network. Addresses are unique. |
+| **Postcondition** | The address book is replaced by `entries` (labels and notes trimmed; empty notes dropped). Returns `{ ok: true, entries }`. |
+| **Error** | 400 with the first offending entry index and reason. |
+
+---
+
+## 15. Address Book File
+
+**Modules:** `src/lib/address-book.ts`, schema `docs/otzi-address-book-schema.json`
+
+Portable `.otzi.json` file for saving, sharing and importing an address book.
+
+```ts
+interface AddressBookFile {
+  kind: 'otzi-address-book';
+  version: 1;
+  network: NetworkName;
+  entries: AddressBookEntry[];
+}
+```
+
+### `parseAddressBookFile(json, network): AddressBookEntry[]`
+
+| Aspect | Contract |
+|---|---|
+| **Postcondition** | Returns the entries when `kind`, `version`, `network` match and every entry satisfies §1 invariants with unique addresses. |
+| **Exception** | Error naming the problem (wrong kind, unsupported version, network mismatch, or the first invalid entry). |
+
+### `mergeAddressBooks(current, incoming): { entries, added, updated, unchanged }`
+
+| Aspect | Contract |
+|---|---|
+| **Postcondition** | Entries keyed by address. Incoming entries replace the label and note of existing ones; existing addresses absent from `incoming` are kept in their original order; new addresses are appended. Counts describe the effect. |
+
+### Import
+
+The user chooses **Merge** (`mergeAddressBooks`) or **Replace** (the file's entries
+become the book) after seeing the counts, then the result is saved with
+`PUT /api/address-book`.
+
+### Export
+
+Downloads `{ kind, version: 1, network, entries }` as
+`otzi-address-book-<network>.otzi.json`.
+
+---
+
+## 16. Authentication
+
+**Modules:** `backend/src/lib/auth.ts`, `backend/src/lib/passkey.ts`, `backend/src/lib/btc-message.ts`, `backend/src/lib/users.ts`
+
+### Modes
+
+| Mode | Admin identity | Other users |
+|---|---|---|
+| `password` (default) | Holder of the admin password. | None. Signing parties join ceremonies with a session code and their share file. |
+| `accounts` | Users with role `admin`. | Users with role `user`. Each user signs in with one credential: a passkey or a Bitcoin address. |
+
+Joining a relay session with a `?session=CODE` link needs no sign-in in either mode.
+
+### Tokens
+
+- 32 random bytes, hex. Valid for 6 hours. Held in server memory.
+- `TokenInfo = { role: 'password-admin' | 'admin' | 'user', userId?, expiresAt }`.
+
+### Middleware
+
+| Guard | `password` mode | `accounts` mode |
+|---|---|---|
+| `requireAdmin` | Token with role `password-admin`. | Token with role `admin`. |
+| `requireUser` | Same as `requireAdmin`. | Token with role `admin` or `user`. |
+| `requireRead` | Open. | Open when `everybodyCanRead`; otherwise any valid token. |
+
+Every guard returns 503 `'Instance not ready'` while no config is loaded (fresh or locked).
+
+A token that carries a `userId` takes its role from the user store on every
+request: a removed user's tokens are invalid, and a role change applies
+immediately. `GET /api/auth/me` and admin checks in routes use the same lookup.
+
+### Challenges
+
+- One-use, 32 random bytes hex, valid 5 minutes.
+- Bitcoin sign-in message, built by the server when issuing the challenge:
+  `Sign in to Otzi\nHost: <host>\nChallenge: <challenge>`, where `<host>` is the
+  host of the request's `Origin` header (the page the user is on), falling back
+  to `X-Forwarded-Host`, then `Host`.
+- When hosting is configured, `<host>` must equal the configured domain (with
+  `:port` unless the port is 80 or 443); a challenge for any other host is refused
+  with 400, so a look-alike site cannot obtain a message naming itself.
+
+### Credentials (users.json)
+
+```ts
+type Credential =
+  | { type: 'passkey'; id: string; publicKey: string; counter: number; transports?: string[]; rpId: string }
+  | { type: 'bitcoin'; address: string };
+
+interface User { id: string; label: string; role: 'admin' | 'user'; credential: Credential }
+```
+
+`id` is 16 random bytes hex. Passkey `id` and `publicKey` are base64url. No two
+users share a passkey ID or a Bitcoin address.
+
+### `CredentialProof`
+
+```ts
+type CredentialProof =
+  | { type: 'passkey'; response: RegistrationResponseJSON }                  // from startRegistration
+  | { type: 'bitcoin'; address: string; challenge: string; signature: string };
+```
+
+### Passkeys (`@simplewebauthn/server`)
+
+| Aspect | Contract |
+|---|---|
+| **RP ID** | Hostname of the request's `Origin` header. Stored with the credential and required at sign-in. |
+| **Expected origin** | The request's `Origin` header; its hostname must equal or be a subdomain of the RP ID. |
+| **Registration** | Options: `attestationType: 'none'`, resident key required, user verification preferred. Verified with `verifyRegistrationResponse` against the stored challenge. |
+| **Sign-in** | Discoverable credentials (empty `allowCredentials`). Verified with `verifyAuthenticationResponse`; the stored counter is updated. |
+
+### Bitcoin message signatures — `verifyBitcoinMessage(address, message, signature)`
+
+| Aspect | Contract |
+|---|---|
+| **Precondition** | `signature` is base64. `address` is a mainnet or test-network address. |
+| **BIP-322 simple** | Signature decodes to a witness stack. P2WPKH: `[derSig‖0x01, pubkey]` with `hash160(pubkey)` matching the address; ECDSA over the BIP143 preimage of the BIP-322 `to_sign` transaction. P2TR: `[schnorrSig(64‖optional 0x00/0x01)]`; BIP340 over the BIP341 preimage, against the address's output key. |
+| **Legacy (BIP-137 / signmessage)** | Signature is 65 bytes; header byte 27–42. Public key recovered from `dsha256(varstr("Bitcoin Signed Message:\n") ‖ varstr(message))`. Valid when the P2PKH, P2SH-P2WPKH or P2WPKH address of the recovered key equals `address`. |
+| **Postcondition** | `true` iff one of the above verifies. Never throws. |
+
+---
+
+## 17. REST API — Auth Routes
+
+**Module:** `backend/src/routes/auth.ts`
+
+| Route | Contract |
+|---|---|
+| `GET /api/auth/me` | `{ authenticated: false }` or `{ authenticated: true, role, userId?, label? }`. |
+| `POST /api/auth/challenge` | Returns `{ challenge, message }` (§16). 400 when hosting is configured and the requesting host differs. |
+| `POST /api/auth/bitcoin/login` | Body `{ address, challenge, signature }`. Challenge consumed; signature verified over its message. Known address → `{ authenticated: true, token, role, label }`. Unknown address → `{ authenticated: false, needsInvite: true }`. 400 bad challenge, 401 bad signature. |
+| `POST /api/auth/bitcoin/register` | Body `{ address, challenge, signature, inviteCode, label? }`. Verified as above; invite redeemed; user created → `{ authenticated: true, token, role, label }`. 400 invalid invite or address already registered. |
+| `POST /api/auth/passkey/register-options` | Body `{ label? }`. Returns `{ options }` for `startRegistration`; challenge stored server-side. Usable on a fresh instance (for `POST /api/init`). |
+| `POST /api/auth/passkey/register` | Body `{ response, inviteCode, label? }`. Registration verified; invite redeemed; user created → `{ authenticated: true, token, role, label }`. |
+| `POST /api/auth/passkey/login-options` | Returns `{ options }` for `startAuthentication`. |
+| `POST /api/auth/passkey/login` | Body `{ response }`. Credential looked up by ID and verified → `{ authenticated: true, token, role, label }`. 401 unknown credential or failed verification. |
+
+---
+
+## 18. REST API — User and Invite Routes
+
+**Module:** `backend/src/routes/users.ts` — all routes require admin.
+
+| Route | Contract |
+|---|---|
+| `GET /api/users` | `{ users: Array<{ id, label, role, credential: { type: 'passkey' } \| { type: 'bitcoin', address } }> }` — passkey key material is never returned. |
+| `POST /api/users` | Body `{ label, role, address }`. Adds a user with a Bitcoin credential. 400 invalid address; 409 address already registered. |
+| `PATCH /api/users/:id` | Body `{ role }`. 409 when demoting the last admin. |
+| `DELETE /api/users/:id` | 409 when removing the last admin. |
+| `GET /api/invites` | `{ invites }` (expired and exhausted invites pruned). |
+| `POST /api/invites` | Body `{ role?, maxUses, expiresAt }`. Returns `{ ok, invite }` with an 8-character code. |
+| `DELETE /api/invites/:code` | Removes the invite. |
+| `GET /api/invites/settings/visibility` | `{ everybodyCanRead }`. |
+| `POST /api/invites/settings/visibility` | Body `{ everybodyCanRead: boolean }`. |
+
+---
+
+## 19. REST API — Hosting Routes
 
 **Module:** `backend/src/routes/hosting.ts`
 
-### `GET /api/hosting`
-
-| Aspect | Contract |
+| Route | Contract |
 |---|---|
-| **Precondition** | Config loaded. |
-| **Postcondition** | Returns `{ hosting }` — either the current `HostingConfig` or `null`. |
-
-### `POST /api/hosting`
-
-| Aspect | Contract |
-|---|---|
-| **Precondition** | Config loaded. `body.domain` is a string (may be empty). `body.httpsEnabled` is a boolean. |
-| **Postcondition** | Hosting config saved. Caddyfile written to `CADDYFILE_PATH`. Caddy reloaded (or started if not running). If HTTPS enabled and domain provided: Caddyfile uses bare domain (Caddy auto-obtains Let's Encrypt cert). If domain without HTTPS: `http://domain` block. If no domain: `:80` catch-all. Returns `{ ok: true, config }`, possibly with `warning` if Caddy not installed. |
-
-### `DELETE /api/hosting`
-
-| Aspect | Contract |
-|---|---|
-| **Precondition** | Config loaded. |
-| **Postcondition** | Hosting config removed from vault config. Default Caddyfile (`:80` proxy) written. Caddy reloaded. Returns `{ ok: true }`. |
+| `GET /api/hosting` (read) | `{ hosting: HostingConfig \| null, hasCaddy }`. |
+| `POST /api/hosting` (admin) | Body `{ domain, port?, path?, httpsEnabled }`. Domain and path sanitized. Caddyfile written to `CADDYFILE_PATH` and Caddy reloaded (or started). HTTPS with a domain uses the bare domain (automatic Let's Encrypt); a domain without HTTPS uses `http://domain:port`; no domain uses `:port`. Returns `{ ok, config }`, with `warning` when Caddy is unavailable or failed. |
+| `DELETE /api/hosting` (admin) | Hosting removed; default `:80` Caddyfile written and Caddy reloaded. |
 
 ---
 
-## 13. Frontend API Client
+## 20. Frontend API Client
 
 **Module:** `src/lib/api.ts`
 
-Thin wrapper around `fetch()` for all `/api/*` endpoints.
-
-### Module Invariants
-
-- All requests include `Content-Type: application/json`.
-- All responses are parsed as JSON.
+- Thin `fetch()` wrapper for every `/api/*` route above.
+- Every request sends `Content-Type: application/json` and, when a session token
+  is stored, `Authorization: Bearer <token>`.
 - Non-2xx responses throw `Error` with the server's `error` field or `HTTP <status>`.
-
-### General Contract
-
-For every API function:
-
-| Aspect | Contract |
-|---|---|
-| **Precondition** | Backend server is reachable at the same origin. Arguments match the endpoint's expected types. |
-| **Postcondition** | Resolves with the typed response body on success. |
-| **Exception** | Throws `Error` on HTTP error (non-2xx) with the server's error message. Throws on network failure. |
-
----
-
-## 14. Type System
-
-**Module:** `src/lib/vault-types.ts` (frontend) / `backend/src/lib/types.ts` (backend)
-
-### Type Invariants
-
-| Type | Invariants |
-|---|---|
-| `NetworkName` | Always `'testnet'` or `'mainnet'`. |
-| `StorageMode` | Always one of `'persistent'`, `'encrypted-persistent'`, `'encrypted-portable'`. |
-| `SetupState` | Two booleans: `wizardComplete` and `dkgComplete`. `dkgComplete` implies a DKG ceremony has been saved and a wallet has been auto-generated. |
-| `WalletConfig` (backend) | Contains `mnemonic` (BIP39). Frontend receives `WalletPublic` (no mnemonic) via `sanitizeConfig()`. |
-| `PermafrostConfig` | `threshold <= parties`. `level` in `{44,65,87,128,192,256}`. `combinedPubKey` is hex-encoded ML-DSA combined public key. `shareData` is the serialized share for this instance. |
-| `ContractConfig` | `address` is a valid OPNet contract address. `abi` is an ABI array. `methods` lists callable method names. |
-| `HostingConfig` | `httpsStatus` is only set when `httpsEnabled === true`. `httpsError` is only set when `httpsStatus === 'error'`. |
-| `VaultConfig` | `version` is always `1`. `contracts` is always an array (possibly empty). `wallet` is auto-generated at DKG save (not user-facing). `permafrost` is present after DKG ceremony. |
-
-### `sanitizeConfig(config): SanitizedConfig`
-
-| Aspect | Contract |
-|---|---|
-| **Precondition** | `config` is a valid `VaultConfig`. |
-| **Postcondition** | Returns a copy with `wallet.mnemonic` stripped. All other fields preserved. If `wallet` is absent, returned as-is. Never mutates the input. |
-| **Security invariant** | The mnemonic NEVER leaves the backend. The wallet is auto-generated internally and its mnemonic is never exposed to the frontend. |
-
-### `defaultConfig(network, storageMode): VaultConfig`
-
-| Aspect | Contract |
-|---|---|
-| **Precondition** | Valid `network` and `storageMode`. |
-| **Postcondition** | Returns a `VaultConfig` with `version: 1`, `wizardComplete: true`, all other setup flags `false`, empty `contracts` array, no `wallet`, no `permafrost`, no `hosting`. |
+- The session token and role live in `sessionStorage`. A 401 response to a request
+  that carried a token clears the stored session.
+- `RELAY_URL` is `VITE_RELAY_URL` when set, otherwise `ws(s)://<current host>/ws`.
 
 ---
 
 ## Cross-Cutting Contracts
 
-### Security Invariants (System-Wide)
+### Security invariants
 
-1. **Mnemonic confinement:** The BIP39 mnemonic is stored only in
-   `config.wallet.mnemonic` on the backend. It is auto-generated during DKG
-   save and never exposed to the frontend. `sanitizeConfig()` strips it from
-   all responses. Wallet objects are `zeroize()`d after use.
+1. **No secrets on the server.** The server stores public key data, the address
+   book, hosting settings, users (public credentials) and the scrypt hash of the
+   admin password. Key shares exist only in party-held share files.
+2. **Share encryption.** Share files are encrypted in the browser (§3). Share
+   passwords never leave the browser.
+3. **Relay E2E encryption.** Relay payloads are encrypted per peer with ECDH-derived
+   AES keys. The relay forwards ciphertext only. Each client checks its own key in
+   the relay's key map; parties compare a 96-bit session fingerprint, and DKG
+   parties confirm it before any secret share is sent.
+4. **Signer approval.** Every signer computes sighashes from the transaction it
+   reviewed and approved (§8). No party signs a hash it did not derive itself.
+5. **Ceremony consistency.** The DKG ends with a signature by all N parties under
+   the new key (§6); joiners verify the leader's aggregate signatures (§7).
+6. **Pre-broadcast verification.** `/api/btc/broadcast` verifies every BIP340
+   signature before broadcasting.
+7. **Broadcast idempotency.** One broadcast per prepared transaction.
+8. **Vault binding.** A share file is used only with the vault whose network and
+   internal key it carries (§4).
+9. **Single-use nonces.** Every FROST nonce pair is used for exactly one
+   `signRound2` call and wiped afterwards (§6, §7).
 
-2. **Share encryption:** Key shares are always encrypted at rest with
-   AES-256-GCM (PBKDF2 600k iterations). The password never leaves the user's
-   browser.
-
-3. **Relay E2E encryption:** All relay messages are encrypted with per-peer
-   AES keys derived from ECDH key agreement. The relay server never sees
-   plaintext ceremony data.
-
-4. **Phase 3+4 integrity:** DKG phase 3 and phase 4 blobs include SHA-256
-   checksums. Phase 3 additionally validates polynomial coefficient ranges
-   (`[0, Q)`). Corrupted blobs are rejected at decode time.
-
-5. **Broadcast idempotency:** Transaction broadcast is locked server-side on
-   `messageHash`. Only one party can successfully broadcast; others receive the
-   cached result. Lock is cleared on error to allow retry.
-
-6. **Canonical ordering:** Threshold signing rounds 2, 3, and combine always
-   sort party IDs ascending before passing data to the cryptographic library.
-   This ensures all parties compute identical inputs regardless of collection
-   order.
-
-7. **BIP340 pre-broadcast verification:** Both `/api/tx/broadcast` (contract
-   signing) and `/api/btc/broadcast` (BTC vault) verify every FROST Schnorr
-   signature via `schnorr.verify()` from `@noble/curves` before injecting
-   into the transaction. Catches ceremony failures before wasting a broadcast.
-
-8. **Backend config encryption:** PBKDF2 with 600K iterations (SHA-256),
-   matching the frontend share file encryption strength.
-
-### State Machine (Vault Lifecycle)
+### State machine (instance lifecycle)
 
 ```
-fresh ──init()──> [persistent | encrypted-persistent | encrypted-portable]
-                         │                  │                    │
-                    (auto-load)        unlock(pw)          importPortable()
-                         │                  │                    │
-                         └────────> ready <──┘────────<──────────┘
-                                     │
-                          ┌──────────┼──────────┐
-                          │          │          │
-                     walletGen   dkgSave   contracts
-                          │          │          │
-                          └──> operational <────┘
-                                     │
-                                  reset()
-                                     │
-                                   fresh
+fresh ──init()──> persistent | encrypted-persistent | encrypted-portable
+                        │               │                    │
+                   (auto-load)     unlock(pw)          restore(backup)
+                        └──────────> ready <─────────────────┘
+                                       │
+                                  dkg/save
+                                       │
+                                     vault ──reset()──> fresh
 ```
 
-### State Machine (Signing Ceremony)
+### State machine (DKG ceremony)
 
 ```
-idle ──createSession()──> round1 ──round1()──> collecting_r1
-     collecting_r1 ──(T blobs)──> round2 ──round2()──> collecting_r2
-     collecting_r2 ──(T blobs)──> round3 ──round3()──> collecting_r3
-     collecting_r3 ──(T blobs)──> combine()
-                                    │
-                           ┌────────┴────────┐
-                           │                 │
-                       sig (success)    null (retry)
-                           │                 │
-                        complete     reset & back to round1
-                                     (up to maxAttempts)
+join ──session config──> commit ──barrier──> shares ──barrier──> verify ──own signature valid──> complete
 ```
 
-### State Machine (DKG Ceremony)
+### State machine (send)
 
 ```
-join ──(config exchanged)──> commit ──phase1()──> reveal ──phase2()──>
-     masks ──phase3()──> aggregate ──phase4()──> complete
+leader:  form ──prepare──> review ──approve + share──> session ──T parties──> FROST ──aggregate──> broadcast ──> result
+joiner:  code + share ──> session ──proposal──> review ──approve──> FROST ──verified FROST-COMPLETE──> result
+                                                     └──reject──> REJECT:<partyId>
 ```
-
-Each phase gate requires all `N` parties' blobs before advancing. Session ID
-prefix is validated on every incoming blob to prevent cross-session confusion.

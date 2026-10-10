@@ -69,7 +69,7 @@ func main() {
 		hub.mu.RLock()
 		count := len(hub.sessions)
 		hub.mu.RUnlock()
-		fmt.Fprintf(w, `{"active":%d}`, count)
+		fmt.Fprintf(w, `{"active":%d,"maxParties":%d}`, count, hub.limits.MaxParties)
 	})
 
 	srv := &http.Server{Addr: *addr, Handler: mux}

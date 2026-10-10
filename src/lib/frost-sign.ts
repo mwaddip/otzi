@@ -17,7 +17,7 @@ import type { SigningCommitment, SignatureShare } from '@mwaddip/frots';
 export interface SighashInfo {
   index: number;
   hash: string;  // hex, 32 bytes
-  type: 'script-path' | 'key-path';
+  type: 'key-path';
 }
 
 export interface FrostSignatureSet {
@@ -116,4 +116,35 @@ export function decodeFrostSignR2(blob: string): { partyId: number; shares: Sign
     shares.push({ identifier, share });
   }
   return { partyId, shares };
+}
+
+// ── Session participant binding ──
+
+/**
+ * Binds relay senders to vault party IDs for one signing session. Each relay
+ * sender may speak for exactly one party, and each party has exactly one
+ * sender. Conflicting claims mean someone is impersonating a co-signer.
+ */
+export class ParticipantBinding {
+  private readonly senderToParty = new Map<number, number>();
+  private readonly partyToSender = new Map<number, number>();
+
+  constructor(private readonly validParty: (partyId: number) => boolean) {}
+
+  /** 'ok' if consistent (binding it if new), 'invalid' for an unknown party, 'conflict' for an impersonation attempt. */
+  bind(sender: number, partyId: number): 'ok' | 'invalid' | 'conflict' {
+    if (!this.validParty(partyId)) return 'invalid';
+    const boundParty = this.senderToParty.get(sender);
+    const boundSender = this.partyToSender.get(partyId);
+    if (boundParty === undefined && boundSender === undefined) {
+      this.senderToParty.set(sender, partyId);
+      this.partyToSender.set(partyId, sender);
+      return 'ok';
+    }
+    return boundParty === partyId && boundSender === sender ? 'ok' : 'conflict';
+  }
+
+  partyOf(sender: number): number | undefined {
+    return this.senderToParty.get(sender);
+  }
 }
