@@ -97,10 +97,15 @@ export function App() {
   const [status, setStatus] = useState<ReadyStatus | null>(null);
   const [sessionCode, setSessionCode] = useState<string | null>(() => {
     const s = new URLSearchParams(window.location.search).get('session');
-    // The code lives in state; drop it from the URL so a reload does not re-join
-    if (s) window.history.replaceState(null, '', window.location.pathname);
     return s && /^[A-Za-z0-9]{6}$/.test(s.trim()) ? s.trim().toUpperCase() : null;
   });
+
+  // The code lives in state; drop it from the URL so a reload does not re-join
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).has('session')) {
+      window.history.replaceState(null, '', window.location.pathname);
+    }
+  }, []);
   const [backupDownloaded, setBackupDownloaded] = useState(false);
 
   const checkStatus = useCallback(async () => {
