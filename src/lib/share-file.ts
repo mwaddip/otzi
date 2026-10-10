@@ -33,6 +33,7 @@ interface SharePayload {
     untweakedVerifyingShare: string;
   };
   publicKeyPackage: VaultKey;
+  network: NetworkName;
 }
 
 export interface DecryptedShare {
@@ -65,6 +66,7 @@ export async function encryptShareFile(
       untweakedVerifyingShare: toHex(keyPackage.untweakedVerifyingShare),
     },
     publicKeyPackage: toVaultKey(publicKeyPackage),
+    network,
   };
   return {
     version: 4,
@@ -126,6 +128,7 @@ export async function decryptShareFile(raw: unknown, password: string): Promise<
   const pub = payload.publicKeyPackage;
   const id = partyIdToFrostId(file.partyId!).toString();
   try {
+    if (payload.network !== file.network) corrupted();
     if (kp.identifier !== id) corrupted();
     if (kp.untweakedVerifyingKey !== file.internalKey || pub.untweakedVerifyingKey !== file.internalKey) corrupted();
     if (kp.verifyingKey !== pub.verifyingKey) corrupted();

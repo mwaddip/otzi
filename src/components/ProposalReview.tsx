@@ -9,6 +9,8 @@ interface Props {
   title: string;
   approveLabel: string;
   rejectLabel?: string;
+  /** Session fingerprint to compare with the initiator before approving. */
+  fingerprint?: string;
   busy?: boolean;
   onApprove: () => void;
   onReject: () => void;
@@ -24,7 +26,7 @@ function Amount({ sats }: { sats: number }) {
   );
 }
 
-export function ProposalReview({ analysis, addressBook, title, approveLabel, rejectLabel = 'Reject', busy, onApprove, onReject }: Props) {
+export function ProposalReview({ analysis, addressBook, title, approveLabel, rejectLabel = 'Reject', fingerprint, busy, onApprove, onReject }: Props) {
   const payments = analysis.outputs.filter(o => !o.isChange);
   const change = analysis.outputs.filter(o => o.isChange).reduce((s, o) => s + o.amount, 0);
   const sent = payments.reduce((s, o) => s + o.amount, 0);
@@ -64,6 +66,13 @@ export function ProposalReview({ analysis, addressBook, title, approveLabel, rej
         <span style={{ color: 'var(--white-dim)' }}>Transaction ID</span>
         <span style={{ fontFamily: 'monospace', fontSize: 11, wordBreak: 'break-all' }}>{analysis.txid}</span>
       </div>
+
+      {fingerprint && (
+        <div style={{ marginTop: 16, padding: 10, border: '1px solid var(--border-dim)', fontSize: 13 }}>
+          <div style={{ color: 'var(--white-dim)', fontSize: 12 }}>Session fingerprint — must match the initiator's</div>
+          <div style={{ fontFamily: 'monospace', fontSize: 15, fontWeight: 600 }}>{fingerprint}</div>
+        </div>
+      )}
 
       {highFee && (
         <div className="warning" style={{ marginTop: 16 }}>

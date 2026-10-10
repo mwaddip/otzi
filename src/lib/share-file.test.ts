@@ -33,6 +33,7 @@ test('wrong password, wrong version and tampered headers are rejected', async ()
   await assert.rejects(() => decryptShareFile({ ...file, version: 3 }, 'pw-pw-pw-pw'), /Unsupported share file version/);
   await assert.rejects(() => decryptShareFile({ ...file, partyId: 1 }, 'pw-pw-pw-pw'), /corrupted/);
   await assert.rejects(() => decryptShareFile({ ...file, threshold: 1 }, 'pw-pw-pw-pw'), /corrupted/);
+  await assert.rejects(() => decryptShareFile({ ...file, network: 'mainnet' }, 'pw-pw-pw-pw'), /corrupted/);
   const other = runDkg(2, 2).publicKeyPackages[0]!;
   await assert.rejects(() => decryptShareFile({ ...file, internalKey: toHex(other.untweakedVerifyingKey) }, 'pw-pw-pw-pw'), /corrupted/);
   await assert.rejects(() => encryptShareFile(keyPackages[0]!, publicKeyPackages[0]!, 'testnet4', 1, 'x'), /does not belong/);

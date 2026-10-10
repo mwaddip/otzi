@@ -26,6 +26,7 @@ export interface SendResult {
 const PROPOSAL = 'PROPOSAL:';
 const PROPOSAL_REQ = 'PROPOSAL-REQ:';
 const REJECT = 'REJECT:';
+const ABORT = 'ABORT:';
 const LEADER = 0;
 
 const encodeText = (s: string) => new TextEncoder().encode(s);
@@ -89,12 +90,18 @@ export function LeaderSession({ network, vault, hosting, prepared, addressBook, 
     void client.broadcast(payload);
     const handler = (from: number, data: Uint8Array) => {
       const text = new TextDecoder().decode(data);
-      if (text.startsWith(PROPOSAL_REQ)) void client.send(from, payload);
-      else if (text.startsWith(REJECT)) setError(`Party ${Number(text.slice(REJECT.length)) + 1} rejected the transaction.`);
+      if (text.startsWith(PROPOSAL_REQ)) {
+        void client.send(from, payload);
+      } else if (text.startsWith(REJECT)) {
+        const claimed = Number(text.slice(REJECT.length));
+        setError(`A co-signer${Number.isInteger(claimed) ? ` (party ${claimed + 1})` : ''} rejected the transaction. The session is closed.`);
+        // End the session for everyone, then disconnect
+        void client.broadcast(encodeText(`${ABORT}rejected`)).catch(() => {}).finally(close);
+      }
     };
     client.on('message', handler);
     return () => client.off('message', handler);
-  }, [relay.client, relay.ready, prepared]);
+  }, [relay.client, relay.ready, prepared, close]);
 
   const doBroadcast = useCallback(async (sigs: FrostSignatureSet) => {
     if (!analysis) return;
@@ -116,7 +123,12 @@ export function LeaderSession({ network, vault, hosting, prepared, addressBook, 
     void doBroadcast(sigs);
   }, [doBroadcast]);
 
-  const cancel = () => { close(); onCancel(); };
+  const cancel = () => {
+    const client = relay.client;
+    if (client?.isReady && !signatures) void client.broadcast(encodeText(`${ABORT}cancelled`)).catch(() => {}).finally(close);
+    else close();
+    onCancel();
+  };
 
   if (!analysis) {
     return (
@@ -168,7 +180,7 @@ export function LeaderSession({ network, vault, hosting, prepared, addressBook, 
           {error && signatures && !broadcasting && (
             <button className="btn btn-primary btn-full" style={{ marginBottom: 8 }} onClick={() => void doBroadcast(signatures)}>Retry broadcast</button>
           )}
-          {!broadcasting && <button className="btn btn-secondary btn-full" onClick={cancel}>{signatures ? 'Close' : 'Cancel session'}</button>}
+          {!broadcasting && <button className="btn btn-secondary btn-full" onClick={cancel}>{signatures || error ? 'Close' : 'Cancel session'}</button>}
         </>
       )}
     </>
@@ -192,6 +204,7 @@ export function JoinerSession({ code, network, vault, addressBook, onFinished, o
   const [proposalError, setProposalError] = useState('');
   const [analysis, setAnalysis] = useState<ProposalAnalysis | null>(null);
   const [approved, setApproved] = useState(false);
+  const [aborted, setAborted] = useState('');
   const { relay, join, close } = useRelay();
   const shareRef = useRef<DecryptedShare | null>(null);
 
@@ -224,6 +237,22 @@ export function JoinerSession({ code, network, vault, addressBook, onFinished, o
     return () => { clearInterval(iv); client.off('message', handler); };
   }, [relay.client, relay.ready, share]);
 
+  // The initiator ending the session, or leaving it, stops this co-signer
+  useEffect(() => {
+    const client = relay.client;
+    if (!client) return;
+    const onMessage = (from: number, data: Uint8Array) => {
+      const text = new TextDecoder().decode(data);
+      if (from === LEADER && text.startsWith(ABORT)) {
+        setAborted(text.slice(ABORT.length) === 'rejected' ? 'A co-signer rejected the transaction. The initiator closed the session.' : 'The initiator closed the session.');
+      }
+    };
+    const onLeft = (partyId: number) => { if (partyId === LEADER) setAborted('The initiator left the session.'); };
+    client.on('message', onMessage);
+    client.on('left', onLeft);
+    return () => { client.off('message', onMessage); client.off('left', onLeft); };
+  }, [relay.client]);
+
   const reject = useCallback(async () => {
     const client = relay.client;
     // Deliver the rejection before the session closes
@@ -249,6 +278,15 @@ export function JoinerSession({ code, network, vault, addressBook, onFinished, o
     );
   }
 
+  if (aborted) {
+    return (
+      <div className="card">
+        <div className="warning">{aborted}</div>
+        <button className="btn btn-secondary btn-full" onClick={() => { close(); onCancel(); }}>Close</button>
+      </div>
+    );
+  }
+
   return (
     <>
       <SessionPanel relay={relay} waitingFor="Waiting for all co-signers to connect" />
@@ -270,6 +308,7 @@ export function JoinerSession({ code, network, vault, addressBook, onFinished, o
           addressBook={addressBook}
           title="Approve transaction"
           approveLabel="Approve & sign"
+          fingerprint={relay.fingerprint}
           onApprove={() => setApproved(true)}
           onReject={reject}
         />

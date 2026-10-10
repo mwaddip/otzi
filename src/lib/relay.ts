@@ -408,6 +408,16 @@ export class RelayClient {
       return;
     }
 
+    // The relay must report our own key unchanged; otherwise it is substituting keys
+    const ownKey = await exportPublicKey(this.keypair.publicKey);
+    const reported = msg.pubkeys[String(this.partyId)];
+    const reportedBytes = reported ? fromBase64(reported) : null;
+    if (!reportedBytes || reportedBytes.length !== ownKey.length || reportedBytes.some((b, i) => b !== ownKey[i])) {
+      this.emit('error', 'Relay returned a wrong key for this party — possible interception');
+      this.close();
+      return;
+    }
+
     const pubkeyMap = new Map<number, Uint8Array>();
 
     for (const [idStr, b64] of Object.entries(msg.pubkeys)) {

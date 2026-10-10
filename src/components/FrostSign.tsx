@@ -13,6 +13,7 @@ import {
   decodeFrostSignR1,
   encodeFrostSignR2,
   decodeFrostSignR2,
+  ParticipantBinding,
   type SighashInfo,
   type FrostSignatureSet,
 } from '../lib/frost-sign';
@@ -28,6 +29,7 @@ interface FrostSignProps {
   sighashes: SighashInfo[];
   share: DecryptedShare;
   isLeader: boolean;
+  /** A ready relay client for a session of exactly `share.threshold` participants. */
   relayClient: RelayClient;
   onSignaturesReady: (sigs: FrostSignatureSet) => void;
   onCancel: () => void;
@@ -39,21 +41,35 @@ const LEADER = 0;
 
 const byIdentifier = <T extends { identifier: number }>(a: T, b: T) => a.identifier - b.identifier;
 
+/**
+ * FROST signing over the relay. Protocol: facts/INTERFACES.md §7.
+ *
+ * Each nonce pair is used for exactly one signRound2 call: round 2 runs once
+ * (guarded synchronously), over a commitment list frozen to the session's T
+ * participants, and the nonces are wiped right after.
+ */
 export function FrostSign({ sighashes, share, isLeader, relayClient, onSignaturesReady, onCancel }: FrostSignProps) {
   const { keyPackage, publicKeyPackage, threshold, partyId } = share;
   const N = sighashes.length;
+  const me = relayClient.partyId;
 
   const [phase, setPhase] = useState<FrostPhase>('round1');
   const [error, setError] = useState('');
+  const [r1Count, setR1Count] = useState(0);
+  const [r2Count, setR2Count] = useState(0);
 
   const noncesRef = useRef<SigningNonces[]>([]);
   const myCommitmentsRef = useRef<SigningCommitment[]>([]);
   const mySharesRef = useRef<SignatureShare[]>([]);
+  // Keyed by relay sender
   const collectedR1Ref = useRef<Map<number, SigningCommitment[]>>(new Map());
   const collectedR2Ref = useRef<Map<number, SignatureShare[]>>(new Map());
-  const [r1Count, setR1Count] = useState(0);
-  const [r2Count, setR2Count] = useState(0);
+  const frozenRef = useRef<{ senders: Set<number>; commitments: SigningCommitment[][] } | null>(null);
+  const round2StartedRef = useRef(false);
+  const aggregatedRef = useRef(false);
+  const failedRef = useRef(false);
   const blobsSentRef = useRef<Set<number>>(new Set());
+  const bindingRef = useRef(new ParticipantBinding(p => publicKeyPackage.verifyingShares.has(BigInt(p + 1))));
   const phaseRef = useRef<FrostPhase>('round1');
   phaseRef.current = phase;
 
@@ -62,14 +78,15 @@ export function FrostSign({ sighashes, share, isLeader, relayClient, onSignature
   const sidPrefix = getSessionIdPrefix(sessionIdRef.current);
 
   const fail = useCallback((msg: string) => {
+    failedRef.current = true;
+    noncesRef.current = [];
     setError(msg);
     setPhase('failed');
   }, []);
 
-  const commitmentsFor = (i: number) => [...collectedR1Ref.current.values()].map(c => c[i]!).sort(byIdentifier);
-
   // ── Round 1: nonces + commitments for every sighash ──
   const doRound1 = useCallback(() => {
+    bindingRef.current.bind(me, partyId);
     const rng = { fillBytes(dest: Uint8Array) { crypto.getRandomValues(dest); } };
     const nonces: SigningNonces[] = [];
     const commitments: SigningCommitment[] = [];
@@ -80,22 +97,29 @@ export function FrostSign({ sighashes, share, isLeader, relayClient, onSignature
     }
     noncesRef.current = nonces;
     myCommitmentsRef.current = commitments;
-    collectedR1Ref.current.set(partyId, commitments);
+    collectedR1Ref.current.set(me, commitments);
     setR1Count(collectedR1Ref.current.size);
     void relayClient.broadcast(new TextEncoder().encode(encodeFrostSignR1(partyId, commitments, sessionIdRef.current)));
     blobsSentRef.current.add(1);
-  }, [N, keyPackage, partyId, relayClient]);
+  }, [N, keyPackage, partyId, me, relayClient]);
 
-  // ── Round 2: signature shares ──
+  // ── Round 2: exactly once, over the T commitment sets collected so far ──
   const doRound2 = useCallback(() => {
-    if (phaseRef.current !== 'round1') return;
+    if (round2StartedRef.current || failedRef.current) return;
+    if (collectedR1Ref.current.size !== threshold || !collectedR1Ref.current.has(me)) return;
+    round2StartedRef.current = true;
+
+    const senders = new Set(collectedR1Ref.current.keys());
+    const sets = [...collectedR1Ref.current.values()];
+    const commitments = sighashes.map((_, i) => sets.map(c => c[i]!).sort(byIdentifier));
+    frozenRef.current = { senders, commitments };
+
+    const nonces = noncesRef.current;
+    noncesRef.current = []; // single use, whatever happens next
     try {
-      const shares: SignatureShare[] = [];
-      for (let i = 0; i < N; i++) {
-        shares.push(signRound2(keyPackage, noncesRef.current[i]!, fromHex(sighashes[i]!.hash), commitmentsFor(i), { tweaked: true }));
-      }
+      const shares = sighashes.map((s, i) => signRound2(keyPackage, nonces[i]!, fromHex(s.hash), commitments[i]!, { tweaked: true }));
       mySharesRef.current = shares;
-      collectedR2Ref.current.set(partyId, shares);
+      collectedR2Ref.current.set(me, shares);
       setR2Count(collectedR2Ref.current.size);
       setPhase('round2');
       void relayClient.broadcast(new TextEncoder().encode(encodeFrostSignR2(partyId, shares, sessionIdRef.current)));
@@ -103,14 +127,20 @@ export function FrostSign({ sighashes, share, isLeader, relayClient, onSignature
     } catch (e) {
       fail(e instanceof Error ? e.message : 'Round 2 failed');
     }
-  }, [N, sighashes, keyPackage, partyId, relayClient, fail]);
+  }, [sighashes, keyPackage, partyId, me, threshold, relayClient, fail]);
 
   // ── Aggregate (leader) ──
   const doAggregate = useCallback(() => {
+    const frozen = frozenRef.current;
+    if (aggregatedRef.current || failedRef.current || !frozen) return;
+    const r2 = collectedR2Ref.current;
+    if (r2.size !== frozen.senders.size || [...r2.keys()].some(s => !frozen.senders.has(s))) return;
+    aggregatedRef.current = true;
     try {
+      const sets = [...r2.values()];
       const signatures = sighashes.map((s, i) => {
-        const shares = [...collectedR2Ref.current.values()].map(x => x[i]!).sort(byIdentifier);
-        const sig = signAggregate(shares, fromHex(s.hash), commitmentsFor(i), publicKeyPackage, { tweaked: true });
+        const shares = sets.map(x => x[i]!).sort(byIdentifier);
+        const sig = signAggregate(shares, fromHex(s.hash), frozen.commitments[i]!, publicKeyPackage, { tweaked: true });
         return { index: s.index, signature: toHex(sig) };
       });
       setPhase('complete');
@@ -169,6 +199,7 @@ export function FrostSign({ sighashes, share, isLeader, relayClient, onSignature
   // ── Incoming relay messages ──
   useEffect(() => {
     const handler = (from: number, payload: Uint8Array) => {
+      if (failedRef.current) return;
       const text = new TextDecoder().decode(payload);
 
       if (text.startsWith(FROST_COMPLETE_PREFIX)) {
@@ -192,35 +223,36 @@ export function FrostSign({ sighashes, share, isLeader, relayClient, onSignature
           void relayClient.broadcast(new TextEncoder().encode(encodeFrostSignR2(partyId, mySharesRef.current, sessionIdRef.current)));
         }
         // Joiner follows the leader into round 2
-        if (!isLeader && from === LEADER && peerRound >= 2 && phaseRef.current === 'round1'
-          && collectedR1Ref.current.size >= threshold) {
-          doRound2();
-        }
+        if (!isLeader && from === LEADER && peerRound >= 2) doRound2();
         return;
       }
 
       const env = decodeEnvelope(text);
-      if (!env || env.sid !== sidPrefix || env.from === partyId) return;
+      if (!env || env.sid !== sidPrefix || from === me) return;
 
-      // Blobs are keyed by vault party ID (relay IDs follow join order and differ)
       const r1 = decodeFrostSignR1(text);
-      if (r1 && r1.commitments.length === N && r1.commitments.every(c => c.identifier === r1.partyId + 1)
-        && !collectedR1Ref.current.has(r1.partyId)) {
-        collectedR1Ref.current.set(r1.partyId, r1.commitments);
+      const r2 = r1 ? null : decodeFrostSignR2(text);
+      const claimed = r1?.partyId ?? r2?.partyId;
+      if (claimed === undefined) return;
+
+      const bound = bindingRef.current.bind(from, claimed);
+      if (bound === 'conflict') { fail(`Two session participants claim party ${claimed + 1}; aborting`); return; }
+      if (bound === 'invalid') return;
+
+      const id = claimed + 1;
+      if (r1 && r1.commitments.length === N && r1.commitments.every(c => c.identifier === id) && !collectedR1Ref.current.has(from)) {
+        if (round2StartedRef.current) return; // the commitment list is frozen
+        collectedR1Ref.current.set(from, r1.commitments);
         setR1Count(collectedR1Ref.current.size);
-        return;
-      }
-      const r2 = decodeFrostSignR2(text);
-      if (r2 && r2.shares.length === N && r2.shares.every(x => x.identifier === r2.partyId + 1)
-        && !collectedR2Ref.current.has(r2.partyId)) {
-        collectedR2Ref.current.set(r2.partyId, r2.shares);
+      } else if (r2 && r2.shares.length === N && r2.shares.every(x => x.identifier === id) && !collectedR2Ref.current.has(from)) {
+        collectedR2Ref.current.set(from, r2.shares);
         setR2Count(collectedR2Ref.current.size);
       }
     };
 
     relayClient.on('message', handler);
     return () => { relayClient.off('message', handler); };
-  }, [relayClient, partyId, isLeader, threshold, N, sidPrefix, doRound2, acceptLeaderSignatures, fail]);
+  }, [relayClient, partyId, me, isLeader, N, sidPrefix, doRound2, acceptLeaderSignatures, fail]);
 
   return (
     <div className="card">

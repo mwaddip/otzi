@@ -32,6 +32,7 @@ import { ShareImport } from './ShareImport';
 import { OtziWordmark } from '../App';
 
 type Step = 'join' | 'commit' | 'shares' | 'verify' | 'complete';
+type Barrier = 'commit' | 'shares' | 'verify';
 const STEPS: Step[] = ['join', 'commit', 'shares', 'verify', 'complete'];
 const STEP_TITLES: Record<Step, string> = {
   join: 'Start', commit: 'Commit', shares: 'Shares', verify: 'Verify', complete: 'Complete',
@@ -47,6 +48,8 @@ interface Ceremony {
   sid: Uint8Array | null;
   me: number;
   error: string;
+  /** This party confirmed the session fingerprint; nothing is sent before. */
+  confirmed: boolean;
   sessionBlob: string | null;
   r1Secret: Round1SecretPackage | null;
   r1Blob: string | null;
@@ -54,7 +57,7 @@ interface Ceremony {
   r2Secret: Round2SecretPackage | null;
   r2Blobs: Map<number, string>;
   r2: Map<number, FrostRound2Package>;
-  barriers: Record<'commit' | 'shares', Set<number>>;
+  barriers: Record<Barrier, Set<number>>;
   keyPackage: KeyPackage | null;
   pkp: PublicKeyPackage | null;
   verifyMsg: Uint8Array | null;
@@ -67,10 +70,10 @@ interface Ceremony {
 
 function freshCeremony(): Ceremony {
   return {
-    step: 'join', t: 2, n: 3, sid: null, me: -1, error: '', sessionBlob: null,
+    step: 'join', t: 2, n: 3, sid: null, me: -1, error: '', confirmed: false, sessionBlob: null,
     r1Secret: null, r1Blob: null, r1: new Map(),
     r2Secret: null, r2Blobs: new Map(), r2: new Map(),
-    barriers: { commit: new Set(), shares: new Set() },
+    barriers: { commit: new Set(), shares: new Set(), verify: new Set() },
     keyPackage: null, pkp: null, verifyMsg: null, nonces: null, commitBlob: null, shareBlob: null,
     vc: new Map(), vs: new Map(),
   };
@@ -134,7 +137,7 @@ export function DKGWizard({ network, onComplete, initialSessionCode }: Props) {
 
   /** Re-send everything this party has produced so far; receivers ignore duplicates. */
   const resend = useCallback(() => {
-    if (c.step === 'join' || c.step === 'complete' || c.error) return;
+    if (!c.confirmed || !c.sid || c.error) return;
     if (c.sessionBlob) send(c.sessionBlob);
     if (c.r1Blob) send(c.r1Blob);
     for (const [to, blob] of c.r2Blobs) send(blob, to);
@@ -142,6 +145,7 @@ export function DKGWizard({ network, onComplete, initialSessionCode }: Props) {
     if (c.barriers.shares.has(c.me)) send(`BARRIER:shares:${c.me}`);
     if (c.commitBlob) send(c.commitBlob);
     if (c.shareBlob) send(c.shareBlob);
+    if (c.barriers.verify.has(c.me)) send(`BARRIER:verify:${c.me}`);
   }, [c, send]);
 
   // ── Ceremony state machine ──
@@ -149,8 +153,10 @@ export function DKGWizard({ network, onComplete, initialSessionCode }: Props) {
   const advance = useCallback(() => {
     if (c.error || !c.sid) { bump(); return; }
     try {
-      for (let guard = 0; guard < 5; guard++) {
+      for (let guard = 0; guard < 6; guard++) {
         const before = c.step;
+
+        if (c.step === 'join' && c.confirmed) c.step = 'commit';
 
         if (c.step === 'commit') {
           if (!c.r1Secret) {
@@ -201,18 +207,23 @@ export function DKGWizard({ network, onComplete, initialSessionCode }: Props) {
             send(c.commitBlob);
           }
           const commitments = () => [...c.vc.values()].sort((a, b) => a.identifier - b.identifier);
-          if (c.vc.size === c.n && !c.vs.has(c.me)) {
-            const share = signRound2(c.keyPackage, c.nonces!, c.verifyMsg!, commitments(), { tweaked: true });
+          if (c.vc.size === c.n && !c.vs.has(c.me) && c.nonces) {
+            const nonces = c.nonces;
+            c.nonces = null; // single use
+            const share = signRound2(c.keyPackage, nonces, c.verifyMsg!, commitments(), { tweaked: true });
             c.vs.set(c.me, share);
             c.shareBlob = encodeFrostSignR2(c.me, [share], c.sid);
             send(c.shareBlob);
           }
-          if (c.vs.size === c.n) {
+          if (c.vs.size === c.n && !c.barriers.verify.has(c.me)) {
             const shares = [...c.vs.values()].sort((a, b) => a.identifier - b.identifier);
             const sig = signAggregate(shares, c.verifyMsg!, commitments(), c.pkp!, { tweaked: true });
             if (!verifySignature(sig, c.verifyMsg!, c.pkp!.verifyingKey)) throw new Error('Verification signature is invalid');
-            c.step = 'complete';
+            c.barriers.verify.add(c.me);
+            send(`BARRIER:verify:${c.me}`);
           }
+          // Complete only once every party has verified the key
+          if (c.barriers.verify.size === c.n) c.step = 'complete';
         }
 
         if (c.step === before) break;
@@ -231,10 +242,10 @@ export function DKGWizard({ network, onComplete, initialSessionCode }: Props) {
     const handler = (from: number, payload: Uint8Array) => {
       const text = new TextDecoder().decode(payload);
 
-      const barrier = text.match(/^BARRIER:(commit|shares):(\d+)$/);
+      const barrier = text.match(/^BARRIER:(commit|shares|verify):(\d+)$/);
       if (barrier) {
         const pid = Number(barrier[2]);
-        if (pid === from) c.barriers[barrier[1] as 'commit' | 'shares'].add(pid);
+        if (pid === from) c.barriers[barrier[1] as Barrier].add(pid);
         advance();
         return;
       }
@@ -255,8 +266,7 @@ export function DKGWizard({ network, onComplete, initialSessionCode }: Props) {
         c.n = config.n;
         c.sid = Uint8Array.from(config.sid.match(/.{2}/g)!.map(h => parseInt(h, 16)));
         c.me = client.partyId;
-        c.step = 'commit';
-        advance();
+        advance(); // moves to commit once this party has confirmed the fingerprint
         return;
       }
 
@@ -287,21 +297,20 @@ export function DKGWizard({ network, onComplete, initialSessionCode }: Props) {
     return () => client.off('message', handler);
   }, [relay.client, c, network, advance, bump]);
 
-  // Creator starts the ceremony once everyone is connected
+  // Creator starts the ceremony once everyone is connected and the fingerprint is confirmed
   useEffect(() => {
     const client = relay.client;
-    if (!client || !relay.ready || client.partyId !== 0 || c.sid) return;
+    if (!client || !relay.ready || !c.confirmed || client.partyId !== 0 || c.sid) return;
     c.sid = generateSessionId();
     c.me = 0;
     c.t = threshold;
     c.n = parties;
     c.sessionBlob = encodeSessionConfig(threshold, parties, network, c.sid);
     send(c.sessionBlob);
-    c.step = 'commit';
     advance();
-  }, [relay.client, relay.ready, c, threshold, parties, network, send, advance]);
+  }, [relay.client, relay.ready, c.confirmed, c, threshold, parties, network, send, advance]);
 
-  // Periodic re-send until complete
+  // Periodic re-send until the session closes
   useEffect(() => {
     if (!relay.ready) return;
     const iv = setInterval(resend, RESEND_MS);
@@ -466,8 +475,20 @@ export function DKGWizard({ network, onComplete, initialSessionCode }: Props) {
             link={relay.client.partyId === 0 && relay.code ? sessionLink(relay.code, hosting) : undefined}
             waitingFor={relay.client.partyId === 0 ? `Share this link with ${parties - 1} other part${parties - 1 === 1 ? 'y' : 'ies'}` : 'Waiting for all parties to join'}
           />
-          {relay.ready && (
-            <div className="card" style={{ textAlign: 'center' }}><div className="spinner" style={{ margin: '0 auto' }} /> Starting…</div>
+          {relay.ready && relay.fingerprint && !c.confirmed && (
+            <div className="card">
+              <p style={{ fontSize: 14 }}>
+                Compare the fingerprint above with every other party — read it out on a call, for example.
+                Continue only if all of you see the same value. Nothing secret is sent before you confirm.
+              </p>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn btn-secondary" style={{ flex: 1 }} onClick={restart}>It differs — cancel</button>
+                <button className="btn btn-primary" style={{ flex: 2 }} onClick={() => { c.confirmed = true; advance(); }}>Fingerprint matches</button>
+              </div>
+            </div>
+          )}
+          {relay.ready && c.confirmed && (
+            <div className="card" style={{ textAlign: 'center' }}><div className="spinner" style={{ margin: '0 auto' }} /> Waiting for the other parties to confirm…</div>
           )}
           <button className="btn btn-secondary btn-full" onClick={restart}>Cancel</button>
         </>
@@ -505,6 +526,7 @@ export function DKGWizard({ network, onComplete, initialSessionCode }: Props) {
               <p>All parties sign a transcript of the ceremony with the new key.</p>
               <PartyTracker collected={[...c.vc.keys()]} total={c.n} me={c.me} label="Commitments" />
               <PartyTracker collected={[...c.vs.keys()]} total={c.n} me={c.me} label="Signatures" />
+              <PartyTracker collected={[...c.barriers.verify]} total={c.n} me={c.me} label="Verified" />
             </>
           )}
           {relay.error && <div className="warning" style={{ marginTop: 12 }}>{relay.error}</div>}
