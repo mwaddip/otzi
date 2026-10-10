@@ -604,7 +604,7 @@ Non-2xx responses throw `Error('<status> <body>')`.
 
 | Aspect | Contract |
 |---|---|
-| **Postcondition** | `{ low, normal, high }` sat/vB from `getFeeRates`. On chain API failure: `{ low: 1, normal: 5, high: 10, fallback: true }`. |
+| **Postcondition** | `{ low, normal, high }` sat/vB from `getFeeRates`. On chain API failure: `{ low: 1, normal: 5, high: 10, fallback: true }`. 503 while no config is loaded. |
 
 ### `POST /api/btc/prepare` — user
 
@@ -620,7 +620,7 @@ Non-2xx responses throw `Error('<status> <body>')`.
 |---|---|
 | **Precondition** | `challengeToken` refers to a prepared transaction. `signatures` has one `{ index, signature }` per input; each signature is 64 bytes hex. |
 | **Postcondition** | Every signature verifies under BIP340 against its input's sighash and `xOnly(vault.verifyingKey)` before anything is broadcast. Signatures are placed as key-path witnesses, the transaction is broadcast via `broadcastTx`, and `{ txid }` is returned. |
-| **Double broadcast** | A second request for the same token returns `{ txid, alreadyBroadcast: true }`. Concurrent requests are serialized by a lock taken before any work; the lock is released on failure. |
+| **Double broadcast** | A request for an already broadcast token returns `{ txid, alreadyBroadcast: true }`. A lock is taken before any work; a concurrent request for the same token gets 409 while it is held; the lock is released on failure. |
 | **Error** | 400 unknown/expired token, wrong signature count or format, or failed BIP340 verification; 502 chain API rejection. |
 
 ---
