@@ -6,9 +6,9 @@ Architecture: amd64
 Depends: nodejs (>= 20)
 Recommends: nginx
 Maintainer: Ötzi <noreply@github.com>
-Description: Post-quantum multisig vault for OPNet Bitcoin L1 smart contracts
- Ötzi combines distributed key generation (DKG), threshold
- ML-DSA signing, wallet management, and OPNet transaction broadcasting
- into a single self-hosted operations interface. Supports declarative
- project manifests for custom contract operations.
+Description: Self-hosted threshold Bitcoin vault
+ Ötzi lets T-of-N parties hold bitcoin in one Taproot address. A FROST
+ distributed key generation ceremony creates the key; any T parties
+ review and co-sign spends. Key shares stay in party-held encrypted
+ share files; the server stores public data only.
 Homepage: https://github.com/mwaddip/otzi

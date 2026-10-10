@@ -1,45 +1,36 @@
 # Ötzi
 
-Post-quantum multisig vault for [OPNet](https://opnet.org) Bitcoin L1 smart contracts.
+Self-hosted threshold Bitcoin vault.
 
-Ötzi is a self-hosted application that combines distributed key generation (DKG), threshold ML-DSA signing, FROST threshold BTC signing, and OPNet transaction broadcasting into a single interface. T-of-N parties each produce their own secret shares of both an ML-DSA (post-quantum) signing key and a FROST secp256k1 BTC key — without any single party ever seeing the full secrets.
+Ötzi lets a group of N people hold bitcoin together so that any T of them can spend it and no smaller group can. The parties run a distributed key generation ceremony in their browsers that produces a single Taproot address. Each party keeps an encrypted share file; spending requires T parties to approve and sign. Nobody — not the server, not any single party — ever holds the whole key.
 
-> **Note:** The FROST library ([frots](https://github.com/mwaddip/frots)) is a byte-for-byte validated TypeScript port of the audited ZF `frost-secp256k1-tr` Rust reference. However, the Ötzi integration layer — DKG ceremony wiring, template tx capture, signature injection, and key-link binding — is new and unaudited. Use on testnet until the integration has been reviewed.
+> **Note:** The FROST library ([frots](https://github.com/mwaddip/frots)) is a byte-for-byte validated TypeScript port of the audited ZF `frost-secp256k1-tr` Rust reference. The Ötzi integration — ceremony wiring, transaction construction and signature injection — has not been audited. Use testnet4 or signet until it has been reviewed.
 
 ## How it works
 
 ### Key generation (DKG ceremony)
 
-1. **One party creates** a session (choosing T, N, and security level).
-2. **Other parties join** by pasting the session code.
-3. The ceremony runs **nine steps** — four ML-DSA phases (Commit, Reveal, Masks, Aggregate), two FROST phases (FROST Commit, FROST Shares), a Key-Link signing step, and finalization.
-4. When complete, each party **downloads their encrypted share file** containing both ML-DSA and FROST key shares, and independently verifies the combined public keys.
-5. The FROST aggregate key becomes the vault's **BTC address** — no separate wallet generation needed. An internal throwaway keypair is auto-generated for SDK protocol-level signatures.
+1. **One party creates** a session, choosing the threshold T and the number of parties N.
+2. **The others join** with the session code or link.
+3. The ceremony runs three steps over the encrypted relay: **Commit** and **Shares** (the two FROST key generation rounds), then **Verify**, where all N parties sign a transcript message with the new key to prove everyone ended up with the same, working key.
+4. Each party **downloads a password-encrypted share file** and checks that the vault address shown matches everyone else's.
 
-### Contract signing
+The vault address is a standard key-path Taproot address (`bc1p…` / `tb1p…`). Fund it from any wallet.
 
-1. One party builds a transaction (contract, method, parameters) and the vault encodes it into calldata.
-2. Each signing party **loads their share file** and enters their password.
-3. The **ML-DSA ceremony** runs three rounds of blob exchange, producing a FIPS 204 threshold signature for the OPNet contract call.
-4. The **FROST ceremony** runs two rounds of blob exchange, producing BIP340 Schnorr signatures for the Bitcoin transaction inputs (one per input, batched in a single round).
-5. One party **broadcasts** the signed transaction to the OPNet network. The server prevents double-broadcast — other parties see the confirmed result.
+### Sending
 
-From the user's perspective, steps 3-4 are one uninterrupted flow over the same relay session.
+1. A user enters a **recipient** (typed or picked from the address book), an **amount** (BTC, mBTC, µBTC or sats, or "max") and a **fee rate**.
+2. The server builds the unsigned transaction from the vault's confirmed coins. The initiator **reviews** recipient, amount, fee and change, loads their share file and opens a signing session.
+3. Each co-signer joins with the session code and their share file. Their browser receives the unsigned transaction, decodes it, and shows exactly what it pays. They **approve or reject**. Every signer computes the transaction's signature hashes itself.
+4. Two FROST rounds produce one Schnorr signature per input. The server verifies every signature and broadcasts the transaction. Transactions signal replace-by-fee.
 
-### BTC vault sends
+### Address book
 
-The FROST P2TR address can send BTC directly — no OPNet contract interaction needed. Click the balance display or the `↗` arrow next to the BTC balance to open the send interface.
+Name the addresses you pay. Labels appear in the send form and on every co-signer's approval screen. Address books are saved and imported as `.otzi.json` files; on import you choose to merge with or replace the current book.
 
-1. Enter a **destination address** (any type: P2TR, P2WPKH, P2SH, legacy), **amount** (BTC/mBTC/µBTC/sats), and **fee rate** (Low/Normal/High from mempool estimates).
-2. Click **Initiate** — the backend builds a plain Bitcoin transaction with key-path Taproot inputs and extracts sighashes.
-3. Each signing party loads their share file and runs the **FROST ceremony** (2 rounds) — no ML-DSA needed.
-4. The initiator **broadcasts** the signed transaction.
+### Relay
 
-This is a Schnorr-only flow — simpler and faster than contract signing.
-
-### Blob exchange
-
-All blob exchange happens via an **encrypted WebSocket relay** built into the container. Messages are E2E encrypted — the relay server only forwards ciphertext.
+All ceremony messages pass through an **end-to-end encrypted WebSocket relay** built into the app. The relay only forwards ciphertext. Each session shows a fingerprint that all parties can compare.
 
 ## Install
 
@@ -113,13 +104,7 @@ your PATH. Open http://localhost:8080 in your browser.
 #### Custom domain and HTTPS
 
 The Docker image includes [Caddy](https://caddyserver.com/) with automatic
-Let's Encrypt HTTPS. Configure from **Settings > Hosting** in the UI, or:
-
-```bash
-curl -X POST http://localhost:8080/api/hosting \
-  -H 'Content-Type: application/json' \
-  -d '{"domain": "vault.example.com", "httpsEnabled": true}'
-```
+Let's Encrypt HTTPS. Configure it from **Settings > Hosting**.
 
 #### Environment variables
 
@@ -133,47 +118,35 @@ curl -X POST http://localhost:8080/api/hosting \
 
 </details>
 
+## Setup
+
+The first visit opens the install wizard:
+
+1. **Network** — `mainnet`, `testnet4` or `signet`.
+2. **Sign-in** — an admin password (default), or **accounts**: named users who sign in with a passkey or a Bitcoin wallet signature, with invites for new users.
+3. **Storage mode** (password sign-in) — how the server keeps its configuration.
+
+Then run the DKG ceremony with your co-signers.
+
 ### Storage modes
 
 | Mode | Description |
 |------|-------------|
 | **Persistent** | Config stored as plaintext JSON. For trusted environments. |
 | **Encrypted Persistent** | Config encrypted with AES-256-GCM on disk. Password required on each restart. |
-| **Encrypted Portable** | Config lives only in server memory. Admin downloads an encrypted backup and re-uploads it on each new server session. Nothing is ever written to disk. |
+| **Encrypted Portable** | Config lives only in server memory. The admin downloads an encrypted backup and restores it after each server restart. Nothing is written to disk. |
 
-#### Portable mode in practice
+The configuration contains no key shares — only the vault's public key data, the address book, hosting settings and users. Losing it does not lose funds: the share files are what control the vault. See [`docs/portable-mode.md`](docs/portable-mode.md).
 
-Portable mode is the most paranoid option — keys never touch the server filesystem — but it has trade-offs you should understand before choosing it.
+### Blockchain data
 
-**How it works:**
-
-- After the install wizard, the entire vault config (wallet, DKG shares, contracts, manifest, users) lives in the server process's memory.
-- Once initialized, the instance **stays loaded and fully operational** for as long as the server process keeps running. Joiners can connect, ceremonies can run, transactions can be signed and broadcast — all without restarting or re-uploading anything.
-- When the server is **rebooted, restarted, redeployed, or nuked**, the in-memory config is wiped. The next visitor sees the install wizard.
-- To recover, the admin restores from their encrypted backup file via the wizard's **Restore from Backup** option.
-
-**Critical workflow:**
-
-1. Complete the install wizard with **Encrypted Portable** selected.
-2. Run the DKG ceremony (an internal wallet is auto-generated at completion).
-4. **Download the encrypted config** when the orange banner appears at the top of the page. The banner stays visible on every page until you click it. This file is your only persistent copy of everything.
-5. Store the `.enc` file somewhere safe (multiple copies recommended).
-6. Use the instance normally. After any meaningful change (new contract, manifest update, added user), download a fresh backup from **Settings > Backup**.
-7. If the server ever restarts, visit the URL → **Restore from Backup** on the wizard → upload your `.enc` file → enter the password.
-
-**How joiners experience portable mode:**
-
-- In **password auth mode**, joiners need no password to participate in signing — they just visit the URL and load their share file. The admin password only gates admin operations.
-- In **wallet auth mode**, joiners authenticate via OPWallet or use a `?session=CODE` URL the admin shares for a single ceremony.
-- In both modes, joiners can only connect while the admin's config is loaded in memory. If the server has restarted and the admin hasn't restored yet, joiners see the install wizard.
-
-For the full guide, see [`docs/portable-mode.md`](docs/portable-mode.md).
+Balances, coins, fee estimates and broadcasting use an [Esplora](https://github.com/Blockstream/esplora)-compatible API — `mempool.space` by default. Point the instance at your own mempool or electrs server in **Settings > Instance** to keep your vault address private.
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  Ötzi                                            │
+│  Ötzi                                           │
 │                                                 │
 │  :80/:443  Web server (nginx/apache/Caddy)      │
 │            └── reverse proxy ──> :8080          │
@@ -185,32 +158,30 @@ For the full guide, see [`docs/portable-mode.md`](docs/portable-mode.md).
 │                                                 │
 │  :8081  Go relay (internal, not exposed)        │
 │                                                 │
-│  /var/lib/otzi  (or /data in Docker)             │
+│  /var/lib/otzi  (or /data in Docker)            │
 └─────────────────────────────────────────────────┘
+               │
+               └──> Esplora API (mempool.space or self-hosted)
 ```
 
 ### Repository structure
 
 ```
 ├── src/                  # React frontend (Vite)
-│   ├── components/       # DKGWizard, InstallWizard, SigningPage,
-│   │                     # MessageBuilder, ThresholdSign, FrostSign,
-│   │                     # BtcSend, Settings, PasswordModal
-│   └── lib/              # DKG protocol, threshold signing, FROST signing,
-│                         # relay client, API client, crypto, share serialization
+│   ├── components/       # InstallWizard, SignIn, DKGWizard, VaultPage,
+│   │                     # BtcSend, ProposalReview, FrostSign, Settings,
+│   │                     # AddressBook, UserManager
+│   └── lib/              # FROST ceremony codecs, share files, transaction
+│                         # analysis, relay client, API client, crypto
 ├── backend/              # Node.js/Express backend
 │   └── src/
-│       ├── lib/          # ConfigStore, encryption, OPNet client,
-│       │                 # ThresholdMLDSASigner, FrostPsbtSigner
-│       ├── routes/       # config, wallet, tx, btc, balances, hosting
+│       ├── lib/          # ConfigStore, Esplora client, transaction building,
+│       │                 # auth (passwords, passkeys, Bitcoin messages), users
+│       ├── routes/       # config, btc, address-book, auth, users, hosting
 │       └── server.ts     # Express entry point + WS proxy
 ├── relay/                # Go WebSocket relay server
-│   ├── main.go           # Entry point
-│   ├── hub.go            # Session management
-│   ├── session.go        # Party tracking, message routing
-│   └── limits.go         # Rate limiting
-├── vendor/post-quantum/  # @btc-vision/post-quantum 0.6.0-alpha.0
 ├── facts/                # Design by Contract interface inventory
+├── docs/                 # User guide, signing flows, portable mode, schemas
 ├── install.sh            # Universal Linux installer
 ├── start.bat             # Windows launcher
 ├── Dockerfile            # Multi-stage Docker build
@@ -230,11 +201,13 @@ npm run dev
 # Terminal 2: Backend (Express on :8080)
 npm run dev:backend
 
-# Terminal 3: Relay (Go on :8081, needed for relay mode)
+# Terminal 3: Relay (Go on :8081)
 npm run dev:relay
 ```
 
 The Vite dev server proxies `/api` and `/ws` to the backend on port 8080.
+
+Tests: `npm test` (frontend libraries), `cd backend && npm test`, `cd relay && go test ./...`.
 
 ### Prerequisites
 
@@ -243,70 +216,13 @@ The Vite dev server proxies `/api` and `/ws` to the backend on port 8080.
 
 ## Security
 
-- **Post-quantum signatures**: ML-DSA (FIPS 204) via threshold signing — no single party holds the full key.
-- **Threshold BTC signing**: FROST (RFC 9591, secp256k1-SHA256-TR ciphersuite) produces standard BIP340 Schnorr signatures. The BTC funding wallet is threshold-controlled — no single party holds the private key.
-- **E2E relay encryption**: All relay messages encrypted with ECDH (P-256) + AES-256-GCM. The relay server only forwards ciphertext.
-- **Share file encryption**: AES-256-GCM with PBKDF2-derived key (600k iterations, SHA-256).
-- **Blob integrity**: DKG phase 3 blobs include SHA-256 checksums and polynomial coefficient range validation.
-- **Canonical ordering**: Signing rounds enforce deterministic party ordering to prevent protocol divergence.
-- **Broadcast locking**: Server-side lock prevents double-broadcast of the same transaction.
-- **No secrets on server**: The relay holds no cryptographic material. Share passwords never leave the browser.
-
-## Project Manifests
-
-Any OPNet project can plug into Otzi by writing a `.otzi.json` manifest file — no custom code needed. The manifest declares contracts, operations, live state reads, conditional visibility, and optional theming. Otzi imports it and renders a fully functional operations interface with threshold signing and broadcasting built in.
-
-### Quick example
-
-```json
-{
-  "version": 1,
-  "name": "My Token",
-  "contracts": {
-    "token": { "label": "MyToken", "abi": "OP_20" }
-  },
-  "reads": {
-    "supply": { "contract": "token", "method": "totalSupply", "returns": "uint256", "format": "token8" }
-  },
-  "status": [
-    { "label": "Total Supply", "read": "supply" }
-  ],
-  "operations": [
-    {
-      "id": "transfer",
-      "label": "Transfer",
-      "contract": "token",
-      "method": "transfer",
-      "params": [
-        { "name": "to", "type": "address", "label": "Recipient" },
-        { "name": "amount", "type": "uint256", "label": "Amount", "scale": 1e8 }
-      ]
-    }
-  ]
-}
-```
-
-Save as `my-token.otzi.json`, import in **Settings > Project Manifest**, configure the contract address, and you're signing and broadcasting transactions through threshold ML-DSA.
-
-### What manifests can do
-
-- **Contracts** — define any number of contracts with custom ABIs or built-in shorthands (`OP_20`, `OP_721`)
-- **State reads** — poll contract values on a timer with format hints (token amounts, BTC values, percentages, prices)
-- **Status panel** — dashboard showing live contract state with optional value-to-label mapping
-- **Operations** — parameter inputs with auto-fill from contract addresses, settings, or live reads; scale multipliers for decimal tokens; confirmation prompts for destructive actions
-- **Conditions** — show/hide operations based on contract state (equality, comparison, block windows, boolean combinators)
-- **Theme** — override accent color, background, and border radius to match your project's branding
-
-### Schema
-
-The full JSON Schema is at [`docs/otzi-manifest-schema.json`](docs/otzi-manifest-schema.json). Use it to validate manifests or as a reference for all available fields.
-
-### Import flow
-
-1. Go to **Settings > Project Manifest > Import .otzi.json**
-2. Select your manifest file
-3. Configure contract addresses for each contract key
-4. Save — operations appear on the main signing page
+- **Threshold signing**: FROST (RFC 9591, secp256k1-SHA256-TR) produces standard BIP340 Schnorr signatures. No single party holds the private key.
+- **Signers see what they sign**: every co-signer decodes the unsigned transaction, reviews recipients, amount and fee, and computes the signature hashes itself before approving.
+- **Verified key generation**: the DKG ends with all N parties signing under the new key; inconsistent or cheating parties are detected and named.
+- **E2E relay encryption**: ECDH (P-256) + AES-256-GCM per peer. The relay only forwards ciphertext.
+- **Share file encryption**: AES-256-GCM with a PBKDF2-derived key (600k iterations, SHA-256), in the browser. Share passwords never leave the browser.
+- **No secrets on the server**: the server stores public key data only.
+- **Pre-broadcast verification**: the server verifies every Schnorr signature before broadcasting, and broadcasts each prepared transaction at most once.
 
 ## License
 
